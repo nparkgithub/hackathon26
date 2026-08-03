@@ -1,0 +1,1232 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>mdns — Android ⇄ Windows device monitor over mDNS</title>
+
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reset.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.css">
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+
+<style>
+/* ------------------------------------------------------------------ *
+ * Palette: "Deep Purple & Emerald" (ui-ux-pro-max #6), adapted.
+ * Dark technical base -- fits a networking/protocol topic and keeps
+ * the animated diagrams legible on a projector.
+ * ------------------------------------------------------------------ */
+:root {
+  --bg:        #181B24;
+  --bg-raise:  #1F2331;
+  --bg-sunken: #12141C;
+  --ink:       #ECEFF6;
+  --ink-dim:   #9AA3B8;
+  --accent:    #B165FB;   /* Android side      */
+  --accent-2:  #40C9A2;   /* Windows side      */
+  --wire:      #4A5169;
+  --warn:      #F0A742;
+  --bad:       #E0575B;
+  --mono: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, monospace;
+}
+
+.reveal { font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+          font-size: 30px; color: var(--ink); }
+.reveal .slides { text-align: left; }
+.reveal .slides section { height: 100%; }
+.reveal-viewport { background: var(--bg); }
+
+.reveal h1, .reveal h2, .reveal h3 {
+  color: var(--ink); text-transform: none; letter-spacing: -0.02em;
+  font-weight: 650; margin: 0 0 0.5em 0; line-height: 1.15;
+}
+.reveal h1 { font-size: 2.0em; }
+.reveal h2 { font-size: 1.32em; }
+.reveal h3 { font-size: 0.92em; color: var(--ink-dim); font-weight: 600; }
+.reveal p, .reveal li { line-height: 1.45; }
+.reveal strong { color: var(--accent); font-weight: 650; }
+.reveal em { color: var(--accent-2); font-style: normal; font-weight: 600; }
+.reveal code { font-family: var(--mono); font-size: 0.82em;
+               background: var(--bg-sunken); color: var(--accent-2);
+               padding: 0.1em 0.36em; border-radius: 4px; }
+.reveal a { color: var(--accent-2); }
+
+.reveal ul { margin-left: 0.2em; }
+.reveal li { margin-bottom: 0.34em; }
+.reveal li::marker { color: var(--wire); }
+
+/* Accent rule under section titles */
+.rule { width: 74px; height: 4px; background: var(--accent);
+        border-radius: 2px; margin: 0 0 0.7em 0; }
+
+/* ---------- layout helpers ---------- */
+.cols   { display: flex; gap: 34px; align-items: flex-start; }
+.cols > * { flex: 1; min-width: 0; }
+.pad    { padding: 6px 0 0 0; }
+.center-y { display: flex; flex-direction: column; justify-content: center;
+            height: 100%; }
+
+.card {
+  background: var(--bg-raise); border: 1px solid var(--wire);
+  border-left: 3px solid var(--accent); border-radius: 8px;
+  padding: 16px 20px; font-size: 0.82em;
+}
+.card.ok  { border-left-color: var(--accent-2); }
+.card.warn{ border-left-color: var(--warn); }
+.card.bad { border-left-color: var(--bad); }
+.card h4  { margin: 0 0 6px 0; font-size: 1.0em; color: var(--ink);
+            font-weight: 650; }
+.card p   { margin: 0; color: var(--ink-dim); font-size: 0.94em; }
+
+.kpi { font-size: 2.5em; font-weight: 700; color: var(--accent-2);
+       line-height: 1; font-family: var(--mono); }
+.kpi-label { font-size: 0.66em; color: var(--ink-dim); margin-top: 4px; }
+
+.tag { display: inline-block; font-family: var(--mono); font-size: 0.62em;
+       padding: 3px 9px; border-radius: 20px; background: var(--bg-sunken);
+       color: var(--ink-dim); border: 1px solid var(--wire); }
+
+pre.block { font-family: var(--mono); font-size: 0.60em; line-height: 1.55;
+            background: var(--bg-sunken); border: 1px solid var(--wire);
+            border-radius: 8px; padding: 14px 18px; color: var(--ink-dim);
+            overflow: visible; box-shadow: none; width: 100%; }
+pre.block .c  { color: var(--accent-2); }
+pre.block .p  { color: var(--accent); }
+pre.block .d  { color: #6B7391; }
+pre.block .w  { color: var(--warn); }
+
+/* ---------- animated architecture / call-flow diagram ---------- */
+.diagram { width: 100%; height: 100%; }
+.node    { fill: var(--bg-raise); stroke: var(--wire); stroke-width: 1.5; }
+.node.android { stroke: var(--accent); }
+.node.win     { stroke: var(--accent-2); }
+.nlabel  { font-family: 'Segoe UI', sans-serif; font-size: 15px;
+           fill: var(--ink); font-weight: 600; }
+.nsub    { font-family: var(--mono); font-size: 11.5px; fill: var(--ink-dim); }
+.wire    { stroke: var(--wire); stroke-width: 2; fill: none; }
+.wire.mdns { stroke: var(--accent); stroke-dasharray: 7 5; }
+.wire.tcp  { stroke: var(--accent-2); }
+.wlabel  { font-family: var(--mono); font-size: 11.5px; fill: var(--ink-dim); }
+
+/* Dashed multicast wires drift, conveying "broadcast, unacknowledged" */
+.fragment.visible .wire.mdns { animation: drift 1.1s linear infinite; }
+@keyframes drift { to { stroke-dashoffset: -24; } }
+
+/* A packet bead that runs the wire once the fragment lands */
+.fragment.visible .bead { animation: bead 1.9s ease-in-out infinite; }
+.bead { opacity: 0; }
+@keyframes bead {
+  0%   { opacity: 0; offset-distance: 0%; }
+  12%  { opacity: 1; }
+  88%  { opacity: 1; }
+  100% { opacity: 0; offset-distance: 100%; }
+}
+
+/* Pulse ring for the multicast announce */
+.fragment.visible .pulse { animation: pulse 2.1s ease-out infinite; }
+.pulse { opacity: 0; }
+@keyframes pulse {
+  0%   { r: 6;  opacity: 0.75; }
+  70%  { r: 46; opacity: 0; }
+  100% { r: 46; opacity: 0; }
+}
+
+/* Live CPU bar, evokes the telemetry stream */
+.fragment.visible .meter-fill { animation: meter 3.4s ease-in-out infinite; }
+@keyframes meter {
+  0%,100% { width: 14%; } 25% { width: 62%; }
+  50% { width: 33%; }     75% { width: 78%; }
+}
+.meter { height: 9px; background: var(--bg-sunken); border-radius: 5px;
+         overflow: hidden; border: 1px solid var(--wire); }
+.meter-fill { height: 100%; width: 14%; border-radius: 5px;
+              background: linear-gradient(90deg, var(--accent-2), var(--accent)); }
+
+/* Sequence-diagram rows reveal in order */
+.seq { display: grid; grid-template-columns: 40px 1fr; gap: 0 16px;
+       align-items: start; }
+.seq .n { font-family: var(--mono); font-size: 0.68em; color: var(--accent);
+          padding-top: 5px; }
+.seq .b { font-size: 0.80em; margin-bottom: 15px; }
+.seq .b span { display: block; color: var(--ink-dim); font-size: 0.86em;
+               margin-top: 2px; }
+
+.reveal .slide-number { font-family: var(--mono); font-size: 13px;
+                        background: none; color: var(--wire); }
+.reveal .progress { color: var(--accent); height: 3px; }
+.footnote { position: absolute; bottom: 8px; left: 0;
+            font-size: 0.52em; color: var(--wire); font-family: var(--mono); }
+</style>
+</head>
+
+<body>
+<div class="reveal"><div class="slides">
+
+<!-- ============================== 1. TITLE ============================== -->
+<section data-background-color="#12141C">
+  <div class="center-y">
+    <span class="tag">ZERO-CONFIG SERVICE DISCOVERY</span>
+    <h1 style="margin-top:22px;">mdns</h1>
+    <h2 style="color:var(--ink-dim); font-weight:500; margin-top:-6px;">
+      Android&nbsp;⇄&nbsp;Windows device monitor over mDNS
+    </h2>
+    <div class="rule" style="margin-top:26px;"></div>
+    <p style="font-size:0.82em; color:var(--ink-dim); max-width:78%;">
+      An Android app advertises <code>_devmon._tcp</code> and serves TCP.
+      A Windows Python client discovers it and streams back its
+      <strong>IP, network interface, and CPU usage</strong>.
+    </p>
+  </div>
+  <div class="footnote">Kotlin · NsdManager · Python · zeroconf · psutil</div>
+
+  <aside class="notes">
+    Opening frame. Two halves, one protocol.
+
+    The problem this solves: two devices on the same WiFi, neither knowing the
+    other's address. No config file, no QR code, no typing IP addresses. That's
+    what mDNS buys you.
+
+    Say up front where this stands: both halves are built and verified working.
+    The Python side was tested end to end, the APK compiles and runs, and the
+    whole thing was exercised on a real emulator. There is one significant
+    limitation about emulators that we'll get to on slide 6 — don't bury it,
+    but don't lead with it either.
+  </aside>
+</section>
+
+<!-- ============================== 2. ARCHITECTURE ============================== -->
+<section>
+  <h2>Architecture</h2>
+  <div class="rule"></div>
+
+  <svg class="diagram" viewBox="0 0 1180 430" preserveAspectRatio="xMidYMid meet"
+       style="height:76%;">
+    <defs>
+      <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3"
+              orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#4A5169"/></marker>
+      <path id="p-mdns" d="M 386 150 L 742 150"/>
+      <path id="p-tcp"  d="M 742 268 L 386 268"/>
+    </defs>
+
+    <!-- Android side -->
+    <g class="fragment fade-right" data-fragment-index="1">
+      <rect class="node android" x="70" y="86" width="316" height="258" rx="10"/>
+      <text class="nlabel" x="92" y="118">Android app  ·  Kotlin</text>
+      <text class="nsub"   x="92" y="140">com.example.devmon</text>
+      <line x1="70" y1="156" x2="386" y2="156" stroke="#4A5169" stroke-width="1"/>
+      <text class="nlabel" x="92" y="186" style="font-size:13.5px;">AdvertiserService.kt</text>
+      <text class="nsub"   x="92" y="206">NsdManager.registerService</text>
+      <text class="nsub"   x="92" y="224">ServerSocket.accept() loop</text>
+      <text class="nlabel" x="92" y="256" style="font-size:13.5px;">Telemetry.kt</text>
+      <text class="nsub"   x="92" y="276">JSON → data class</text>
+      <text class="nlabel" x="92" y="306" style="font-size:13.5px;">MainActivity.kt</text>
+      <text class="nsub"   x="92" y="326">StateFlow → UI</text>
+    </g>
+
+    <!-- Windows side -->
+    <g class="fragment fade-left" data-fragment-index="1">
+      <rect class="node win" x="742" y="86" width="316" height="258" rx="10"/>
+      <text class="nlabel" x="764" y="118">Windows client  ·  Python</text>
+      <text class="nsub"   x="764" y="140">discover_and_report.py</text>
+      <line x1="742" y1="156" x2="1058" y2="156" stroke="#4A5169" stroke-width="1"/>
+      <text class="nlabel" x="764" y="186" style="font-size:13.5px;">Listener</text>
+      <text class="nsub"   x="764" y="206">zeroconf ServiceBrowser</text>
+      <text class="nlabel" x="764" y="236" style="font-size:13.5px;">Reporter (thread/peer)</text>
+      <text class="nsub"   x="764" y="256">reconnecting TCP client</text>
+      <text class="nlabel" x="764" y="286" style="font-size:13.5px;">telemetry()</text>
+      <text class="nsub"   x="764" y="306">psutil · route resolution</text>
+    </g>
+
+    <!-- mDNS discovery wire -->
+    <g class="fragment" data-fragment-index="2">
+      <use href="#p-mdns" class="wire mdns" marker-end="url(#ar)"/>
+      <path d="M 742 150 L 386 150" class="wire mdns" marker-end="url(#ar)"/>
+      <text class="wlabel" x="470" y="138">mDNS  224.0.0.251:5353  UDP</text>
+      <circle class="pulse" cx="386" cy="150" fill="none"
+              stroke="#B165FB" stroke-width="2"/>
+      <circle class="bead" r="4.5" fill="#B165FB"
+              style="offset-path:path('M 386 150 L 742 150');"/>
+    </g>
+
+    <!-- TCP telemetry wire -->
+    <g class="fragment" data-fragment-index="3">
+      <use href="#p-tcp" class="wire tcp" marker-end="url(#ar)"/>
+      <text class="wlabel" x="470" y="290">TCP  newline-delimited JSON</text>
+      <circle class="bead" r="4.5" fill="#40C9A2"
+              style="offset-path:path('M 742 268 L 386 268'); animation-delay:.4s;"/>
+    </g>
+
+    <g class="fragment fade-up" data-fragment-index="4">
+      <text class="nsub" x="446" y="392" style="fill:#6B7391;">
+        one WiFi subnet — mDNS is link-local and does not cross routers
+      </text>
+    </g>
+  </svg>
+
+  <aside class="notes">
+    Build this up in four clicks — don't dump it all at once.
+
+    Click 1 — the two components. Note the asymmetry: the phone is the SERVER
+    here, which surprises people. The phone advertises and listens; the PC
+    connects and pushes. We chose that way round because the PC has the
+    interesting telemetry.
+
+    Click 2 — mDNS discovery. Dashed and animated on purpose: this is UDP
+    multicast, fire-and-forget, no handshake. Both arrows because discovery is
+    bidirectional — the browser queries, the advertiser announces.
+
+    Click 3 — the TCP stream. Solid line, one direction: PC to phone. Newline-
+    delimited JSON, one object per sample, roughly every 2 seconds.
+
+    Click 4 — the constraint that governs everything else. mDNS is link-local,
+    TTL 1. Same subnet or it does not work. This single line explains the
+    emulator problem, the 2.4-vs-5GHz gotcha, and the AP-isolation gotcha all
+    at once.
+
+    If asked why not just type an IP: phone IPs change on every DHCP lease.
+  </aside>
+</section>
+
+<!-- ==================== 2b. DISCOVERY → CONNECT → SEND (DETAIL) ==================== -->
+<section>
+  <h2>How the client learns the address</h2>
+  <div class="rule"></div>
+  <p style="font-size:0.70em; color:var(--ink-dim); margin:-8px 0 12px 0;">
+    <code>discover_and_report.py</code> — from multicast query to first JSON frame.
+    Nothing is configured; every value below is learned at runtime.
+  </p>
+
+  <div class="cols" style="gap:26px;">
+    <!-- left: the DNS records -->
+    <div style="flex:1.05;">
+      <h3 style="font-size:0.66em;">1 · What mDNS actually returns</h3>
+      <pre class="block fragment fade-up" data-fragment-index="1" style="font-size:0.52em;">
+<span class="d"># browse: "who serves _devmon._tcp?"  → UDP 224.0.0.251:5353</span>
+ServiceBrowser(zc, <span class="c">"_devmon._tcp.local."</span>, listener)
+
+<span class="d"># the phone answers with three record types:</span>
+<span class="p">PTR</span>  _devmon._tcp.local  <span class="d">→</span> devmon-pixel._devmon._tcp.local
+<span class="p">SRV</span>  devmon-pixel…       <span class="d">→</span> host <span class="c">NPARK.local</span> port <span class="c">41979</span>
+<span class="p">A</span>    devmon-pixel.local  <span class="d">→</span> <span class="c">192.168.1.42</span>
+<span class="p">TXT</span>  role=android-advertiser model=Pixel sdk=36</pre>
+    </div>
+
+    <!-- right: extraction -->
+    <div style="flex:1;">
+      <h3 style="font-size:0.66em;">2 · Extract host + port</h3>
+      <pre class="block fragment fade-up" data-fragment-index="2" style="font-size:0.52em;">
+<span class="d">def</span> add_service(self, zc, type_, name):
+    info = zc.<span class="p">get_service_info</span>(type_, name, timeout=<span class="c">3000</span>)
+    ip, port = self._describe(info)   <span class="d"># ← A + SRV</span>
+
+<span class="d">def</span> _describe(info):
+    addrs = info.<span class="p">parsed_addresses</span>(IPVersion.V4Only) \
+            <span class="d">or</span> info.parsed_addresses()
+    <span class="d">return</span> addrs[<span class="c">0</span>], info.port</pre>
+
+      <div class="card fragment fade-up" data-fragment-index="3"
+           style="margin-top:16px; font-size:0.90em;">
+        <h4>Prefer IPv4</h4>
+        <p>Phones often answer with IPv6 link-local <em>and</em> IPv4. Taking v4
+           first avoids scope-id handling on Windows; the fallback keeps v6-only
+           peers working.</p>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    First of two mechanics slides. Three clicks.
+
+    Click 1 — the records. This is the part most explanations hand-wave.
+    Browsing is not one lookup; it's three record types doing different jobs.
+    PTR answers "who exists" and gives you only a NAME. SRV maps that name to a
+    hostname and a PORT. A maps the hostname to an IP. TXT carries free-form
+    metadata — we use role, model and sdk.
+
+    The key point: you need PTR plus SRV plus A before you can open a socket. A
+    name alone is useless. zeroconf's get_service_info does all three lookups
+    and blocks up to three seconds.
+
+    Click 2 — extraction. Short function, two real decisions in it.
+
+    Click 3 — the IPv4 preference. Worth a sentence: a phone will typically
+    announce both an IPv6 link-local address and an IPv4 one. IPv6 link-local
+    needs a scope id to be usable, which is a portability headache on Windows,
+    so we take v4 when it exists and fall back otherwise.
+
+    If there is no address at all we bail rather than construct a Reporter
+    pointed at nothing.
+
+    Next slide: what we do with the address once we have it.
+  </aside>
+</section>
+
+<!-- ==================== 2c. CONNECT + SEND ==================== -->
+<section>
+  <h2>Connect, frame, push</h2>
+  <div class="rule"></div>
+  <p style="font-size:0.70em; color:var(--ink-dim); margin:-8px 0 12px 0;">
+    Discovery handed us <code>ip</code> and <code>port</code>. One thread per peer
+    takes it from there.
+  </p>
+
+  <div class="cols" style="gap:26px;">
+    <div style="flex:1.05;">
+      <h3 style="font-size:0.66em;">3 · Dial it, keep it alive</h3>
+      <pre class="block fragment fade-up" data-fragment-index="1" style="font-size:0.52em;">
+r = <span class="p">Reporter</span>(name, ip, port, interval, verbose)
+r.start()          <span class="d"># one daemon thread per peer</span>
+
+<span class="d">def</span> run(self):                       <span class="d"># reconnect loop</span>
+  <span class="d">while</span> <span class="d">not</span> self._stop.is_set():
+    <span class="d">try:</span>
+      <span class="d">with</span> socket.<span class="p">create_connection</span>(
+              (self.host, self.port), timeout=<span class="c">5</span>) <span class="d">as</span> s:
+        self._pump(s)
+    <span class="d">except</span> OSError <span class="d">as</span> e:
+      <span class="w">print</span>(f<span class="c">"{e} - retrying in 3s"</span>)
+    self._stop.wait(<span class="c">3</span>)</pre>
+
+      <h3 style="font-size:0.66em; margin-top:14px;">4 · Frame and push</h3>
+      <pre class="block fragment fade-up" data-fragment-index="2" style="font-size:0.52em;">
+<span class="d">def</span> _pump(self, sock):
+  <span class="d">while</span> <span class="d">not</span> self._stop.is_set():
+    payload = <span class="p">telemetry</span>(self.host, self.port)
+    sock.<span class="p">sendall</span>((json.dumps(payload) + <span class="c">"\n"</span>).encode())
+    self._stop.wait(self.interval)     <span class="d"># 2 s</span></pre>
+    </div>
+
+    <div style="flex:1;">
+      <div class="card fragment fade-up" data-fragment-index="3"
+           style="font-size:0.84em; padding:13px 18px;">
+        <h4>The peer address feeds back in</h4>
+        <p><code>telemetry(self.host, …)</code> takes the <em>discovered</em> IP and
+           asks the OS which local interface routes to it — so the reported
+           <code>ip</code>/<code>interface</code> is the one facing that phone.</p>
+      </div>
+
+      <div class="card ok fragment fade-up" data-fragment-index="4"
+           style="margin-top:10px; font-size:0.84em; padding:13px 18px;">
+        <h4>Why newline-delimited JSON</h4>
+        <p>Not length-prefixed, not one object per connection. The Kotlin reader
+           is <code>BufferedReader.readLine()</code> — the simplest correct parser
+           available.</p>
+      </div>
+
+      <div class="card warn fragment fade-up" data-fragment-index="5"
+           style="margin-top:10px; font-size:0.84em; padding:13px 18px;">
+        <h4>Two details that matter</h4>
+        <p><code>sendall</code> not <code>send</code> — <code>send</code> can write
+           partially. And the 5 s connect timeout stops a discovered-but-
+           unreachable phone hanging the thread.</p>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    Second mechanics slide. Five clicks — two code blocks on the left, three
+    cards on the right.
+
+    Click 1 — the connect. Two things worth calling out. It's a thread per peer,
+    so several phones stream concurrently and one dropping doesn't disturb the
+    others. And create_connection sits inside a while loop with a three-second
+    backoff, so WiFi dropping out is a pause rather than a crash. That
+    reconnect path was exercised in testing when a service record went stale
+    and the port changed underneath us.
+
+    Click 2 — the send loop. Build the payload, serialise, append a newline,
+    sendall, sleep two seconds. That's the whole protocol.
+
+    Click 3 — the subtle design point, and the one I'd want an interviewer to
+    ask about. We pass the phone's address into telemetry(), because "what is my
+    IP" has no single answer on a machine with eight interfaces. The only
+    correct answer is "the address that routes to you" — and only the peer's
+    address can determine that.
+
+    Click 4 — format choice. Newline-delimited JSON keeps the Android parser to
+    a single readLine() call. Length-prefixing would be marginally more
+    efficient and considerably more code on both sides.
+
+    Click 5 — the two easy-to-miss details. sendall loops until the whole buffer
+    is written; send can return having written part of it, which silently
+    corrupts a frame. And without the connect timeout, a phone that advertised
+    but isn't reachable — asleep, firewalled — would block that thread
+    indefinitely.
+
+    Likely question: what if the port changes? update_service fires, we tear the
+    Reporter down and re-add it.
+  </aside>
+</section>
+
+<!-- ==================== 2d. ANNOUNCEMENT INTERVAL (RFC 6762) ==================== -->
+<section>
+  <h2>How often does the phone announce?</h2>
+  <div class="rule"></div>
+  <p style="font-size:0.68em; color:var(--ink-dim); margin:-8px 0 10px 0;">
+    Not a config value in this codebase — it's dictated by
+    <strong>RFC 6762 §8.3</strong>, and the platform's mDNS responder enforces it,
+    not our app.
+  </p>
+
+  <div class="cols" style="gap:26px;">
+    <div style="flex:1.05;">
+      <h3 style="font-size:0.64em;">1 · The announce burst</h3>
+      <pre class="block fragment fade-up" data-fragment-index="1" style="font-size:0.55em; padding:11px 16px;">
+<span class="d"># §8.3: at least 2 unsolicited responses, spaced 1s apart</span>
+t=0.0s   <span class="p">announce</span>  <span class="d"># registerService() returns</span>
+t=1.0s   <span class="p">announce</span>  <span class="d"># required minimum: 2 total</span>
+t=3.0s   <span class="p">announce</span>  <span class="d"># optional, up to 8 total</span>
+t=7.0s   <span class="p">announce</span>  <span class="d"># each gap ≥ 2× the last</span>
+<span class="d"># ...then silence. Only answers queries after this.</span></pre>
+
+      <div class="card warn fragment fade-up" data-fragment-index="2"
+           style="margin-top:8px; font-size:0.80em; padding:11px 16px;">
+        <h4>No heartbeat</h4>
+        <p>§8.3 is explicit: <em>"MUST NOT send regular periodic
+           announcements."</em> The burst above is the whole lifetime —
+           no re-advertise loop is hiding in <code>AdvertiserService</code>.</p>
+      </div>
+
+      <div class="card fragment fade-up" data-fragment-index="3"
+           style="margin-top:8px; font-size:0.72em; padding:9px 16px;">
+        <h4>TTL, not a retry timer</h4>
+        <p style="margin:0;">
+          <strong>A</strong> <span style="color:var(--ink-dim);">(Address, IPv4)</span> /
+          <strong>AAAA</strong> <span style="color:var(--ink-dim);">(Address, IPv6)</span>:
+          <strong>120 s</strong>.
+          <strong>PTR</strong> <span style="color:var(--ink-dim);">(Pointer)</span> /
+          <strong>SRV</strong> <span style="color:var(--ink-dim);">(Service)</span> /
+          <strong>TXT</strong> <span style="color:var(--ink-dim);">(Text)</span>:
+          <strong>75 min</strong>.
+          Goodbye packets set TTL=<strong>0</strong> so listeners purge the entry
+          almost immediately.</p>
+      </div>
+    </div>
+
+    <div style="flex:1;">
+      <h3 style="font-size:0.64em;">2 · How to actually see it</h3>
+
+      <div class="card ok fragment fade-up" data-fragment-index="4"
+           style="font-size:0.78em; padding:9px 16px;">
+        <h4>Capture on the Windows side</h4>
+        <p>No root needed — multicast is visible to any host on the subnet:</p>
+        <pre class="block" style="font-size:0.53em; margin:5px 0 0 0; padding:8px 12px;">
+tshark -i Wi-Fi -f "udp port 5353" <span class="w">\</span>
+  -Y dns -T fields -e frame.time_relative <span class="w">\</span>
+  -e ip.src -e dns.qry.name</pre>
+      </div>
+
+      <div class="card fragment fade-up" data-fragment-index="5"
+           style="margin-top:7px; font-size:0.78em; padding:9px 16px;">
+        <h4>Or capture on the emulator</h4>
+        <p><code>adb shell tcpdump -i any -n 'udp port 5353' -w
+           /sdcard/mdns.pcap</code>, then <code>adb pull</code> and open in
+           Wireshark, filter <code>mdns</code>.</p>
+      </div>
+
+      <div class="card fragment fade-up" data-fragment-index="6"
+           style="margin-top:7px; font-size:0.78em; padding:9px 16px;">
+        <h4>Cheapest option: no capture at all</h4>
+        <p>Bump <code>zeroconf</code>'s logger to <code>DEBUG</code> in
+           <code>discover_and_report.py</code> — every received PTR/SRV/A
+           retransmission logs with a timestamp, on tooling already in this
+           repo.</p>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    This slide exists because of a direct question: how often does the phone
+    re-send its advertisement, and how would we check that ourselves instead
+    of taking my word for it.
+
+    Click 1 — the timeline. RFC 6762 section 8.3 requires at least two
+    unsolicited responses one second apart, and permits up to eight total with
+    each gap at least doubling the last — 1, 2, 4, 8 seconds and so on. That's
+    a bounded burst at registration time, not a recurring schedule.
+
+    Click 2 — the part people usually get wrong. The RFC says outright: must
+    not send regular periodic announcements. So there is no timer in
+    AdvertiserService because there shouldn't be one — the phone announces
+    once (as a short burst) and then only responds when queried. This
+    directly explains the "unregistered" log line from earlier testing — that
+    was a discrete event, not a missed heartbeat.
+
+    Click 3 — TTL is the mechanism that actually governs freshness, and it
+    isn't one-size-fits-all. Address records — A for IPv4, AAAA for IPv6 —
+    expire in 120 seconds because a phone's IP churns with every DHCP lease
+    renewal. The identity-level records — PTR, the pointer that says the
+    service exists; SRV, the service record that maps the instance to a
+    hostname and port; and TXT, the free-form text metadata — all get 75
+    minutes, because that information barely ever changes. A clean shutdown
+    sends the same records again with TTL zero as a "goodbye," so caches
+    drop them in about a second instead of waiting out the full TTL.
+
+    Click 4 through 6 — three ways to verify this independently rather than
+    trust the RFC text alone. Capturing on the Windows side is the easiest:
+    it's the same subnet, so multicast is visible to any host, no root
+    required. The emulator route needs tcpdump over adb. The cheapest option
+    needs no packet capture at all — zeroconf already logs every record it
+    receives, so a DEBUG log level surfaces the same retransmission pattern
+    through code already in this repo.
+
+    If asked "so is 53 seconds normal for a re-register" — no, that number
+    doesn't come from this RFC section at all; it's worth capturing traffic
+    to find the actual cause rather than assuming it's expected mDNS behavior.
+  </aside>
+</section>
+
+<!-- ==================== 2f. WHO RESENDS, AND WHEN ==================== -->
+<section>
+  <h2>After the TTL split — who resends, and when?</h2>
+  <div class="rule"></div>
+  <p style="font-size:0.68em; color:var(--ink-dim); margin:-8px 0 10px 0;">
+    Neither on a schedule. TTL expiring is a <strong>receiver-side</strong>
+    event — the phone has no clock counting down to a resend.
+  </p>
+
+  <div class="cols" style="gap:26px;">
+    <div style="flex:1;">
+      <h3 style="font-size:0.64em;">1 · Responder (phone) — two triggers only</h3>
+
+      <div class="card ok fragment fade-up" data-fragment-index="1"
+           style="font-size:0.78em; padding:9px 16px;">
+        <h4>Asked a question</h4>
+        <p>A query for <code>_devmon._tcp</code> or the instance/hostname
+           arrives → the phone answers immediately, any time, regardless of
+           how long it's been advertising. This is the steady state — it
+           doesn't proactively broadcast, it just answers.</p>
+      </div>
+
+      <div class="card ok fragment fade-up" data-fragment-index="2"
+           style="margin-top:7px; font-size:0.78em; padding:9px 16px;">
+        <h4>Something actually changed</h4>
+        <p>IP changes (new DHCP lease, network switch) or the service
+           re-registers on a new port → the platform's mDNS responder
+           announces the changed records with the cache-flush bit set.
+           RFC 6762 §10.1 — react to a real change, not a timer.</p>
+      </div>
+
+      <div class="card warn fragment fade-up" data-fragment-index="3"
+           style="margin-top:7px; font-size:0.78em; padding:9px 16px;">
+        <h4>Still no heartbeat</h4>
+        <p>§8.3's "no regular periodic announcements" rule applies here too.
+           This logic lives in the OS mDNS stack under <code>NsdManager</code>,
+           not in <code>AdvertiserService</code>.</p>
+      </div>
+    </div>
+
+    <div style="flex:1;">
+      <h3 style="font-size:0.64em;">2 · Receiver (Windows/zeroconf) — drives the cadence</h3>
+
+      <div class="card fragment fade-up" data-fragment-index="4"
+           style="font-size:0.78em; padding:9px 16px;">
+        <h4>Proactive re-query near TTL%</h4>
+        <p>RFC 6762 §5.2: re-query at <strong>80 / 85 / 90 / 95%</strong> of
+           TTL. For a 120 s A record that's ~96 s, 102 s, 108 s, 114 s — each
+           usually answered instantly by trigger 1, refreshing the cache
+           before it ever expires.</p>
+      </div>
+
+      <div class="card fragment fade-up" data-fragment-index="5"
+           style="margin-top:7px; font-size:0.78em; padding:9px 16px;">
+        <h4>Silent expiry if unanswered</h4>
+        <p>If the phone is genuinely gone, none of those re-queries get a
+           reply, and the record quietly ages out at 100% of TTL — no
+           explicit goodbye needed for that path.</p>
+      </div>
+
+      <div class="card bad fragment fade-up" data-fragment-index="6"
+           style="margin-top:7px; font-size:0.78em; padding:9px 16px;">
+        <h4>What tshark actually shows</h4>
+        <p>Resend traffic isn't "phone rebroadcasting on a schedule" — it's
+           <strong>Windows re-asking</strong> near the TTL boundary, phone
+           answering because it was asked. The phone is passive; the client
+           drives the refresh cadence.</p>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    This slide exists to correct a natural assumption: that TTL expiring
+    makes the phone resend. It doesn't — TTL is purely a receiver-side
+    bookkeeping value.
+
+    Click 1 and 2 — the only two things that make the responder emit
+    anything after the initial announce burst. Either it gets asked (the
+    normal steady state — any query gets an immediate answer, at any time),
+    or something concrete changed (IP, port) and the OS's mDNS responder
+    announces just the changed records with cache-flush set. Click 3
+    reinforces that this is still governed by "no periodic announcements" —
+    it's OS-level reactive logic, not a loop in our Kotlin code.
+
+    Click 4 and 5 — the receiver side is where TTL actually drives behavior.
+    zeroconf (and any RFC-compliant mDNS client) re-queries a record it
+    still cares about at 80, 85, 90, and 95 percent of its TTL, specifically
+    so the cache refreshes before expiring. If the phone answers — which it
+    will, per click 1 — the receiver never even notices a gap. If the phone
+    is truly gone, those re-queries go unanswered and the record just ages
+    out silently at 100 percent; no goodbye packet is required for that
+    path, only for a clean, intentional shutdown.
+
+    Click 6 — ties it back to what you'd actually see in a capture. Don't
+    mistake periodic re-query traffic from the Windows side for the phone
+    "checking in." The phone only ever answers; Windows is the one polling
+    on a TTL-driven schedule.
+  </aside>
+</section>
+
+<!-- ============================== 3. CALL FLOW ============================== -->
+<section>
+  <h2>Call flow</h2>
+  <div class="rule"></div>
+  <div class="cols">
+    <div>
+      <div class="seq">
+        <div class="n fragment fade-right" data-fragment-index="1">01</div>
+        <div class="b fragment fade-right" data-fragment-index="1">
+          <code>ServerSocket.bind(0)</code>
+          <span>Kernel assigns a free port — bound <em>before</em> registering,
+                because the SRV record must carry the real port.</span>
+        </div>
+
+        <div class="n fragment fade-right" data-fragment-index="2">02</div>
+        <div class="b fragment fade-right" data-fragment-index="2">
+          <code>NsdManager.registerService</code>
+          <span>Type <code>_devmon._tcp</code>, plus TXT records: role, model, sdk.</span>
+        </div>
+
+        <div class="n fragment fade-right" data-fragment-index="3">03</div>
+        <div class="b fragment fade-right" data-fragment-index="3">
+          <code>onServiceRegistered</code>
+          <span>Name read back from the callback — the platform renames on
+                collision, so never assume what you asked for.</span>
+        </div>
+
+        <div class="n fragment fade-right" data-fragment-index="4">04</div>
+        <div class="b fragment fade-right" data-fragment-index="4">
+          <code>ServiceBrowser</code> finds it
+          <span>zeroconf resolves A + SRV + TXT → address and port.</span>
+        </div>
+
+        <div class="n fragment fade-right" data-fragment-index="5">05</div>
+        <div class="b fragment fade-right" data-fragment-index="5">
+          <code>Reporter</code> connects, streams
+          <span>One thread per peer, reconnecting; a sample every 2 s.</span>
+        </div>
+
+        <div class="n fragment fade-right" data-fragment-index="6">06</div>
+        <div class="b fragment fade-right" data-fragment-index="6">
+          <code>StateFlow</code> → UI
+          <span>Peer map keyed by address; entry removed in <code>finally</code>
+                on disconnect.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="pad">
+      <div class="card ok fragment fade-up" data-fragment-index="5">
+        <h4>Live sample</h4>
+        <pre class="block" style="font-size:0.55em; margin:8px 0 0 0;">
+<span class="d">{</span> <span class="p">"host"</span>: <span class="c">"NPARK"</span>,
+  <span class="p">"ip"</span>: <span class="c">"10.71.216.218"</span>,
+  <span class="p">"interface"</span>: <span class="c">"Wi-Fi"</span>,
+  <span class="p">"cpu_percent"</span>: <span class="c">16.2</span>,
+  <span class="p">"cpu_count"</span>: <span class="c">16</span>,
+  <span class="p">"mem_percent"</span>: <span class="c">94.5</span>,
+  <span class="p">"interfaces"</span>: <span class="d">[ … 8 … ]</span> <span class="d">}</span></pre>
+        <div class="meter" style="margin-top:14px;"><div class="meter-fill"></div></div>
+        <div class="kpi-label">cpu_percent, sampled every 2 s</div>
+      </div>
+
+      <div class="card fragment fade-up" data-fragment-index="6"
+           style="margin-top:16px;">
+        <h4>Route-aware, not naïve</h4>
+        <p><code>ip</code> and <code>interface</code> are resolved with a
+           connectionless UDP socket — the address the OS <em>would actually
+           use</em> to reach the phone, not the first NIC in the list.</p>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    Six clicks, one per step. The two cards on the right land with steps 5 and 6.
+
+    Step 1 is the subtle one and worth pausing on. Bind before register. If you
+    register first you have no port to put in the SRV record, and a hardcoded
+    port collides the moment you run two instances.
+
+    Step 3 is the bug most people ship. NsdManager silently renames your service
+    on collision — "devmon" becomes "devmon (2)". If you cache the name you
+    requested instead of reading the callback, your unregister call later fails
+    silently. We read it back.
+
+    Step 5 — one thread per peer, and it reconnects. During testing a service
+    record went stale and the port changed underneath us; update_service tore
+    the reporter down and re-pointed it automatically. That path is exercised,
+    not theoretical.
+
+    Point at the right-hand card: eight interfaces on this laptop, and only one
+    is the real route. Naive code grabs the first NIC and reports a dead
+    169.254 link-local address. We resolve the actual route with a UDP connect —
+    no packet sent, just the routing decision.
+  </aside>
+</section>
+
+<!-- ============================== 4. WHAT WAS VERIFIED ============================== -->
+<section>
+  <h2>Verified, not assumed</h2>
+  <div class="rule"></div>
+
+  <div class="cols">
+    <div class="card ok fragment fade-up">
+      <h4><i class="fa-solid fa-circle-check"></i> Python, end to end</h4>
+      <p>Advertiser and discoverer in separate processes: discovery, connect,
+         live CPU stream, clean shutdown. Stale-record recovery observed.</p>
+    </div>
+    <div class="card ok fragment fade-up">
+      <h4><i class="fa-solid fa-circle-check"></i> Android build</h4>
+      <p><code>BUILD SUCCESSFUL</code> — 5.8 MB APK. <code>aapt2</code> confirms
+         all four permissions, incl. <code>NEARBY_WIFI_DEVICES</code> with
+         <code>neverForLocation</code>.</p>
+    </div>
+    <div class="card ok fragment fade-up">
+      <h4><i class="fa-solid fa-circle-check"></i> On the emulator</h4>
+      <p>API 36 / Android 16. Phone rendered the PC's real Wi-Fi IP, adapter,
+         live CPU and memory, and all 8 interfaces.</p>
+    </div>
+  </div>
+
+  <div class="cols" style="margin-top:20px;">
+    <div class="card warn fragment fade-up">
+      <h4><i class="fa-solid fa-bug"></i> Bug found: abrupt disconnect</h4>
+      <p>Killing the client raised an unhandled
+         <code>ConnectionResetError</code>. Now caught — a peer vanishing is
+         normal, not an error.</p>
+    </div>
+    <div class="card warn fragment fade-up">
+      <h4><i class="fa-solid fa-bug"></i> Bug found: loopback telemetry</h4>
+      <p>Over a tunnel the peer looks like <code>127.0.0.1</code>, so the report
+         read <em>"Loopback Pseudo-Interface"</em> — useless. Now falls back to
+         the LAN address and flags <code>ip_via_tunnel</code>.</p>
+    </div>
+  </div>
+
+  <aside class="notes">
+    The point of this slide: every claim on the previous slides was executed,
+    not reasoned about.
+
+    Top row is what passed. Bottom row is what testing actually caught — and
+    this is the more honest half. Two real bugs, both found by running the
+    thing rather than reading it.
+
+    The loopback bug is the interesting one. Over an adb-forward tunnel the
+    client appears to the phone as 127.0.0.1, so route resolution correctly
+    picked loopback — technically right, completely useless as telemetry. The
+    fix detects loopback and falls back to the default-route address, with a
+    flag so the consumer knows it happened.
+
+    If someone asks about test coverage: be straight — there is no automated
+    unit test suite. Verification was scripted end-to-end runs. tools/test-
+    emulator.sh reproduces the full path and exits non-zero on failure. That's
+    the honest state.
+  </aside>
+</section>
+
+<!-- ============================== ENVIRONMENT: CERTS ============================== -->
+<section>
+  <h2>Why a certificate bundle?</h2>
+  <div class="rule"></div>
+
+  <div class="cols" style="gap:28px;">
+    <div style="flex:1.02;">
+      <h3 style="font-size:0.66em;">The failure</h3>
+      <pre class="block fragment fade-up" data-fragment-index="1" style="font-size:0.53em;">
+<span class="d">$</span> pip install zeroconf psutil
+<span class="w">SSLError</span>(SSLCertVerificationError(
+  <span class="c">"[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify</span>
+<span class="c">   failed: self-signed certificate in certificate chain"</span>))</pre>
+
+      <h3 style="font-size:0.66em; margin-top:14px;">The cause</h3>
+      <div class="card fragment fade-up" data-fragment-index="2"
+           style="font-size:0.90em;">
+        <p>The corporate network <strong>intercepts TLS</strong>: it terminates
+           the connection to PyPI, re-signs it with an internal root, and hands
+           you that instead. Windows trusts that root. <em>Python does not</em> —
+           pip 23 ships its own CA list (<code>certifi</code>) and ignores the OS
+           store entirely.</p>
+      </div>
+      <div class="card warn fragment fade-up" data-fragment-index="3"
+           style="margin-top:12px; font-size:0.90em;">
+        <h4>Not a Python problem</h4>
+        <p>Same root cause hits <code>npm</code>, <code>gradle</code>,
+           <code>git</code>, <code>curl</code> — anything shipping a private
+           trust store.</p>
+      </div>
+    </div>
+
+    <div style="flex:1;">
+      <h3 style="font-size:0.66em;">Three ways out</h3>
+
+      <div class="card bad fragment fade-up" data-fragment-index="4"
+           style="font-size:0.86em; padding:13px 18px;">
+        <h4><i class="fa-solid fa-xmark"></i> <code>--trusted-host</code></h4>
+        <p>Disables verification. Works, but you are now downloading and
+           executing code over an unverified channel. Fine to bootstrap, wrong
+           as a default.</p>
+      </div>
+
+      <div class="card fragment fade-up" data-fragment-index="5"
+           style="margin-top:8px; font-size:0.86em; padding:13px 18px;">
+        <h4><i class="fa-solid fa-check"></i> Export the OS trust store</h4>
+        <p>What this repo does: 267 Windows roots → PEM, pinned via
+           <code>pip.conf</code>. Verification stays <em>on</em>; pip simply
+           trusts what Windows already trusts.</p>
+      </div>
+
+      <div class="card ok fragment fade-up" data-fragment-index="6"
+           style="margin-top:8px; font-size:0.88em;">
+        <h4><i class="fa-solid fa-star"></i> Skip it — upgrade pip</h4>
+        <p><strong>pip ≥ 24.2 reads the Windows store natively</strong>
+           (<code>truststore</code>). No bundle, no flags, nothing to
+           regenerate.</p>
+        <pre class="block" style="font-size:0.60em; margin:6px 0 0 0; line-height:1.25; padding:10px 14px;">
+py -m venv .venv
+.venv\Scripts\python -m pip install --trusted-host pypi.org <span class="w">\</span>
+  --trusted-host files.pythonhosted.org --upgrade pip
+.venv\Scripts\python -m pip install -r requirements.txt  <span class="d"># no flags</span></pre>
+      </div>
+    </div>
+  </div>
+
+  <div class="footnote">Tested on this machine: pip 23.2.1 fails · pip 26.2 succeeds with no flags</div>
+
+  <aside class="notes">
+    Two questions to answer here: why does this exist, and can we skip it.
+
+    Click 1 — the error. Anyone setting this up on a corporate laptop sees
+    exactly this, and it looks like a broken package index. It isn't.
+
+    Click 2 — the cause, and this is the bit worth understanding. The network is
+    doing a deliberate man-in-the-middle: it terminates your TLS session to
+    PyPI, inspects the traffic, then re-signs it with an internal corporate root
+    before handing it over. That's standard practice for traffic inspection.
+    Windows was configured to trust that root, so browsers are fine. But pip 23
+    ships its own bundled CA list called certifi and does not consult the
+    Windows store at all — so from pip's point of view it is being attacked, and
+    it correctly refuses.
+
+    Click 3 — generalise it. This is not Python-specific. npm, gradle, git and
+    curl all ship or reference their own trust stores, and all break the same
+    way in this environment.
+
+    Click 4 — the tempting wrong answer. --trusted-host makes the error go away
+    by turning verification off. You are then fetching executable code with no
+    authentication whatsoever. It's acceptable for one bootstrap step, not as a
+    standing configuration.
+
+    Click 5 — what the repo actually does. Export the Windows roots to a PEM,
+    point pip at it. Verification remains fully on; we've just told pip to trust
+    the same authorities the OS trusts. Cost: a 450 KB file that is
+    machine-specific and needs regenerating if IT rotates the root.
+
+    Click 6 — and here is the direct answer to "can we skip the setup". Yes.
+    Newer pip has a truststore feature that reads the Windows certificate store
+    natively, which is exactly what we hand-rolled. I tested both on this
+    machine: the pip 23.2.1 that ships with Python 3.11 fails, and after
+    upgrading to pip 26.2 a plain install with no flags succeeds.
+
+    The one wrinkle — you need a working pip to upgrade pip, and the bundled one
+    can't reach PyPI. So bootstrap that single upgrade with --trusted-host, then
+    everything after it verifies properly. One unverified step to fetch pip
+    itself, instead of every install forever.
+
+    If asked which to use: new setups take the pip upgrade. The bundle stays in
+    the repo because it also fixes Gradle and works on machines pinned to old
+    pip.
+  </aside>
+</section>
+
+<!-- ============================== ENVIRONMENT: OTHER FIXES ============================== -->
+<section>
+  <h2>Other environment friction</h2>
+  <div class="rule"></div>
+  <p style="font-size:0.76em; color:var(--ink-dim); margin-top:-6px;">
+    Three more things that blocked a fresh setup — all handled inside the
+    scripts, so <code>tools/test-emulator.sh</code> needs no setup at all.
+  </p>
+
+  <div class="cols" style="margin-top:18px;">
+    <div class="card bad fragment fade-up">
+      <h4><code>Cert:</code> provider missing</h4>
+      <p>PowerShell's certificate drive is absent on this install, so
+         <code>export-ca-bundle.ps1</code> reads the store through .NET
+         <code>X509Store</code> instead.</p>
+    </div>
+    <div class="card bad fragment fade-up">
+      <h4>Python not on <code>PATH</code></h4>
+      <p>3.11 is installed but only the <code>py</code> launcher is exposed, so
+         scripts resolve the interpreter explicitly rather than assuming
+         <code>python</code> resolves.</p>
+    </div>
+    <div class="card bad fragment fade-up">
+      <h4>Git Bash path mangling</h4>
+      <p><code>$HOME</code> → <code>/u/</code>; <code>/sdcard/…</code> rewritten to
+         Windows paths; <code>gradlew.bat</code> needing a Windows-form
+         <code>JAVA_HOME</code>.</p>
+    </div>
+  </div>
+
+  <div class="card ok fragment fade-up" style="margin-top:24px;">
+    <h4>Why this earns a slide</h4>
+    <p>None of these are visible in the source, and each costs a fresh clone
+       real time to rediscover. So the fixes live <em>in the scripts</em> — not in
+       a setup document nobody reads.</p>
+  </div>
+
+  <aside class="notes">
+    Move briskly. This is reference material, not argument — skip it entirely if
+    the audience isn't the people who will run the code.
+
+    The through-line: all three are environment quirks invisible in the source,
+    and each one costs twenty minutes to rediscover.
+
+    Git Bash is the worst offender. It helpfully rewrites anything resembling a
+    Unix path into a Windows path, which silently breaks adb commands that
+    reference /sdcard. Setting MSYS_NO_PATHCONV=1 disables that — but then it
+    also stops converting the APK path, which adb needs in Windows form. So the
+    script disables conversion globally and explicitly converts the one path
+    that needs it.
+
+    The payoff is the bottom card. The fixes are inside the scripts, so someone
+    cloning this repo runs one command and it works.
+  </aside>
+</section>
+
+<!-- ============================== 6. THE EMULATOR LIMIT ============================== -->
+<section data-background-color="#12141C">
+  <h2><i class="fa-solid fa-triangle-exclamation" style="color:var(--warn);"></i>
+      The emulator cannot discover</h2>
+  <div class="rule" style="background:var(--warn);"></div>
+
+  <div class="cols">
+    <div>
+      <p style="font-size:0.80em;">
+        The AVD sits behind QEMU's user-mode NAT. Multicast does not cross that
+        virtual router — so mDNS cannot reach your LAN, and nothing on the LAN
+        reaches the emulator.
+      </p>
+      <pre class="block fragment fade-up">
+<span class="d">$</span> adb shell ip -o addr show
+<span class="d">1:</span>  lo     inet <span class="c">127.0.0.1/8</span>
+<span class="d">15:</span> eth0   inet <span class="c">10.0.2.15/24</span>   <span class="d">← QEMU NAT (reported LTE)</span>
+<span class="d">16:</span> wlan0  inet <span class="c">10.0.2.16/24</span>   <span class="d">← virtual AP, also internal</span></pre>
+      <div class="card warn fragment fade-up" style="margin-top:14px;">
+        <h4>A correction worth making</h4>
+        <p>First diagnosis was "no WiFi interface." Wrong — <code>wlan0</code>
+           and <code>hwsim0</code> exist. It boots <em>down</em>, with the default
+           route on LTE-flavoured <code>eth0</code>.</p>
+      </div>
+    </div>
+
+    <div>
+      <div class="card fragment fade-up">
+        <h4>Bring the virtual WiFi up</h4>
+        <pre class="block" style="margin:8px 0 0 0;">
+<span class="d">$</span> adb shell cmd wifi \
+    connect-network AndroidWifi open</pre>
+        <p style="margin-top:10px;">Registration then <em>succeeds</em>:
+           <code>MdnsAdvertiser.wlan0: Probing finished</code>. A queued service
+           completed within a second of <code>wlan0</code> appearing — after
+           11 minutes parked.</p>
+      </div>
+
+      <div class="card bad fragment fade-up" style="margin-top:16px;">
+        <h4>Still not cross-machine</h4>
+        <p><code>10.0.2.16</code> is inside the NAT. The <code>AndroidWifi</code>
+           AP is emulator-internal; Windows <code>--list</code> finds nothing.
+           <strong>A physical device is required for real discovery.</strong></p>
+      </div>
+    </div>
+  </div>
+
+  <aside class="notes">
+    This is the most important slide in the deck. Do not rush it.
+
+    The headline: you cannot test mDNS discovery on an emulator. Not a bug in
+    our code, not a firewall setting — the emulator's network stack does not
+    forward multicast.
+
+    Own the correction openly. The first diagnosis was that the AVD has no WiFi
+    interface. That was wrong, and checking /sys/class/net showed wlan0 and
+    hwsim0 both present. What's actually true: wlan0 boots DOWN, and the default
+    route is eth0, which dumpsys reports as a CELLULAR transport. NsdManager
+    needs a multicast-capable network up, and LTE-flavoured eth0 doesn't
+    qualify.
+
+    Then the useful discovery. One command brings the virtual AP up, and
+    registration immediately succeeds. The evidence is the timeline: a service
+    registered at 10:30 sat parked for eleven minutes and finished probing
+    within one second of wlan0 appearing. Parked, not failed.
+
+    So the emulator is more useful than first stated — it can exercise the real
+    NsdManager success path and the Advertising UI state. What it still cannot
+    do is talk to another machine.
+
+    If asked "so is the emulator useless?" — no. Two modes, next slide.
+  </aside>
+</section>
+
+<!-- ============================== 7. TESTING STRATEGY ============================== -->
+<section>
+  <h2>Two emulator modes, one gap</h2>
+  <div class="rule"></div>
+
+  <div class="cols">
+    <div class="card fragment fade-up">
+      <h4><span class="tag">MODE A</span></h4>
+      <p style="margin-top:10px;"><code>adb forward</code> + <code>--connect</code></p>
+      <p style="margin-top:10px;"><strong>Covers:</strong> TCP server, wire
+         format, peers UI, reconnect, JSON parsing.</p>
+      <p style="margin-top:8px;"><strong>Misses:</strong> all of
+         <code>NsdManager</code>.</p>
+    </div>
+    <div class="card fragment fade-up">
+      <h4><span class="tag">MODE B</span></h4>
+      <p style="margin-top:10px;"><code>cmd wifi connect-network</code></p>
+      <p style="margin-top:10px;"><strong>Covers:</strong> registration,
+         probing, collision rename, the <em>Advertising</em> UI state.</p>
+      <p style="margin-top:8px;"><strong>Misses:</strong> cross-machine
+         discovery.</p>
+    </div>
+    <div class="card bad fragment fade-up">
+      <h4><span class="tag">PHYSICAL DEVICE</span></h4>
+      <p style="margin-top:10px;">The only way to test discovery for real.</p>
+      <p style="margin-top:10px;">Watch for <strong>AP client isolation</strong>
+         on guest/corporate WiFi, and routers splitting 2.4 / 5 GHz onto
+         separate subnets.</p>
+    </div>
+  </div>
+
+  <div class="card warn fragment fade-up" style="margin-top:22px;">
+    <h4>A footgun worth naming</h4>
+    <p>The app binds port <code>0</code>, so <strong>the port changes on every
+       restart</strong>. A stale <code>adb forward</code> still accepts on 9999
+       and then silently fails to reach the dead device port — the client prints
+       <code>[+] connected</code> and nothing ever arrives.
+       <code>tools/forward.sh</code> re-reads the live port from logcat.</p>
+  </div>
+
+  <aside class="notes">
+    Three columns, then the footgun.
+
+    Modes A and B are complementary, and neither replaces hardware. Mode A
+    tunnels over ADB so the NAT is irrelevant — it tests everything above the
+    transport. Mode B brings the virtual AP up and tests the NsdManager path.
+    Together they cover most of the code; the discovery handshake between two
+    machines is the residual gap.
+
+    The footgun cost real debugging time in this session, so it earns its space.
+    Symptom: client says connected, phone never updates, no error anywhere. The
+    cause is a stale forward pointing at a port from a previous app run. adb
+    forward happily accepts your connection and then can't reach the dead port.
+
+    Fix is tools/forward.sh, which reads the live port out of logcat instead of
+    trusting a remembered number. It was tested against exactly that failure —
+    force-stop the app, relaunch, re-run, and it picks up the new port.
+
+    Rule of thumb for the audience: after any app restart, re-run forward.sh.
+  </aside>
+</section>
+
+<!-- ============================== 8. STATUS + NEXT ============================== -->
+<section>
+  <h2>Status &amp; what's next</h2>
+  <div class="rule"></div>
+
+  <div class="cols" style="margin-bottom:24px;">
+    <div class="fragment fade-up">
+      <div class="kpi">8</div>
+      <div class="kpi-label">source files, two languages</div>
+    </div>
+    <div class="fragment fade-up">
+      <div class="kpi">5.8<span style="font-size:0.4em;"> MB</span></div>
+      <div class="kpi-label">debug APK, builds clean</div>
+    </div>
+    <div class="fragment fade-up">
+      <div class="kpi">6/6</div>
+      <div class="kpi-label">automated emulator steps pass</div>
+    </div>
+    <div class="fragment fade-up">
+      <div class="kpi">2</div>
+      <div class="kpi-label">bugs found by running it</div>
+    </div>
+  </div>
+
+  <div class="cols">
+    <div>
+      <h3>Done</h3>
+      <ul style="font-size:0.72em;">
+        <li>mDNS advertise + discover, both directions verified on the LAN</li>
+        <li>Route-aware IP / interface / CPU / memory reporting</li>
+        <li>Four script modes incl. phone-free <code>--advertise</code></li>
+        <li>One-command emulator test, environment fixes self-contained</li>
+      </ul>
+    </div>
+    <div>
+      <h3>Next</h3>
+      <ul style="font-size:0.72em;">
+        <li><strong>Test on a physical phone</strong> — the one untested path,
+            and the one most likely to surprise</li>
+        <li>Add <code>DiscoveryListener</code> so the app can also be the
+            client — lets Windows advertise to many phones</li>
+        <li>Bind <code>edit-html</code>-style dev servers to loopback</li>
+        <li>Foreground service so advertising survives backgrounding</li>
+      </ul>
+    </div>
+  </div>
+
+  <aside class="notes">
+    Land the plane. Numbers first, then the honest split.
+
+    Four numbers: eight source files, a clean 5.8 MB APK, six of six automated
+    steps passing, two real bugs caught by execution.
+
+    Done column — all four verified in this session, not planned.
+
+    Next column, and lead with the first one. The physical-device test is the
+    single highest-value remaining task, because discovery is the part the
+    emulator cannot cover AND the part most likely to break for environmental
+    reasons that have nothing to do with the code — AP isolation, band
+    splitting.
+
+    The second item is a design opportunity, not a fix. Right now roles are
+    fixed: phone serves, PC pushes. Inverting it — Windows advertises, phones
+    discover — arguably fits the goal better, since one PC could serve several
+    phones. The app would need a DiscoveryListener and an outbound socket.
+
+    Close on this: the protocol work is done and proven. What remains is
+    hardware validation and an optional role inversion.
+
+    Q&A likely: "why not Bluetooth / a cloud broker?" — mDNS needs no pairing,
+    no account, no internet. "Does it work on iOS?" — same protocol, Bonjour is
+    native; the Python side would not change at all.
+  </aside>
+</section>
+
+</div></div>
+
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/dist/reveal.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/reveal.js@5.1.0/plugin/notes/notes.js"></script>
+<script>
+Reveal.initialize({
+  width: 1280, height: 720,        // 16:9
+  margin: 0.055,
+  minScale: 0.2, maxScale: 2.0,
+  controls: true, progress: true, slideNumber: 'c/t', hash: true,
+  center: false,                    // content-heavy slides read better top-aligned
+  transition: 'slide',
+  plugins: [ RevealNotes ],
+});
+</script>
+</body>
+</html>
