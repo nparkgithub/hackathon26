@@ -13,6 +13,10 @@ Modes:
   --connect     skip mDNS, connect straight to HOST:PORT (emulator / adb forward)
   --advertise   act as a stand-in for the Android app (advertise + receive),
                 so the discovery half can be tested with no phone involved.
+  --scan        skip mDNS, find the advertiser by TCP-probing this host's /24
+                subnet on a fixed port (AdvertiserService.FIXED_PORT). Use this
+                when mDNS multicast can't get through, e.g. AP client isolation
+                on guest/corporate WiFi.
 """
 
 from __future__ import annotations
@@ -26,12 +30,18 @@ import socketserver
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import psutil
 from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, ServiceListener, Zeroconf
 
 SERVICE_TYPE = "_devmon._tcp.local."
 DEFAULT_INTERVAL = 2.0
+
+# Must match AdvertiserService.FIXED_PORT on the Android side. Used by --scan to
+# find the advertiser by TCP-probing the subnet when mDNS multicast can't get
+# through (e.g. AP client isolation on guest/corporate WiFi).
+SCAN_PORT_DEFAULT = 47531
 
 # Static description of whatever local LLM this host is set up to run. Not
 # queried from a live server -- just a fixed label so the phone can display
@@ -147,6 +157,48 @@ def telemetry(peer_ip: str | None, peer_port: int) -> dict:
         "interfaces": interface_snapshot(),
         "llm": LLM_INFO,
     }
+
+
+# --------------------------------------------------------------------------- #
+# Subnet scan (fallback discovery when mDNS multicast can't get through)
+# --------------------------------------------------------------------------- #
+
+def local_subnet_hosts() -> list[str]:
+    """Every /24 host address next to us, excluding our own IP.
+
+    Good enough for the common home/office case; doesn't attempt to read the
+    real prefix length off the interface.
+    """
+    ip = lan_ip()
+    if not ip:
+        return []
+    base = ".".join(ip.split(".")[:3])
+    return [f"{base}.{i}" for i in range(1, 255) if f"{base}.{i}" != ip]
+
+
+def probe_host(ip: str, port: int, timeout: float) -> bool:
+    try:
+        with socket.create_connection((ip, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def scan_for_peers(port: int, timeout: float, max_workers: int = 64) -> list[str]:
+    """TCP-probe every host on our subnet at `port`, in parallel.
+
+    Note: this just checks that *something* accepts on that port - there's no
+    handshake to confirm it's actually a devmon advertiser. Fine on a small
+    trusted LAN; pick an uncommon port to keep false positives unlikely.
+    """
+    hosts = local_subnet_hosts()
+    found = []
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(probe_host, h, port, timeout): h for h in hosts}
+        for fut in as_completed(futures):
+            if fut.result():
+                found.append(futures[fut])
+    return found
 
 
 # --------------------------------------------------------------------------- #
@@ -298,6 +350,13 @@ def main() -> int:
     p.add_argument("--connect", metavar="HOST:PORT", help="bypass mDNS (use with adb forward)")
     p.add_argument("--advertise", nargs="?", const=socket.gethostname(), metavar="NAME",
                    help="act as the Android side: advertise and receive")
+    p.add_argument("--scan", action="store_true",
+                   help="bypass mDNS; find peers by TCP-probing this host's /24 subnet on --scan-port")
+    p.add_argument("--scan-port", type=int, default=SCAN_PORT_DEFAULT,
+                   help=f"port to probe with --scan (default {SCAN_PORT_DEFAULT}; must match "
+                        "AdvertiserService.FIXED_PORT on the Android side)")
+    p.add_argument("--scan-timeout", type=float, default=0.3,
+                   help="per-host connect timeout in seconds for --scan (default 0.3)")
     p.add_argument("--interval", type=float, default=DEFAULT_INTERVAL, help="seconds between samples")
     p.add_argument("-q", "--quiet", action="store_true", help="do not echo each sample")
     args = p.parse_args()
@@ -319,6 +378,27 @@ def main() -> int:
                 r.join(0.5)
         except KeyboardInterrupt:
             r.stop()
+        return 0
+
+    if args.scan:
+        print(f"[*] scanning subnet on port {args.scan_port} (timeout {args.scan_timeout}s/host) ...")
+        peers = scan_for_peers(args.scan_port, args.scan_timeout)
+        if not peers:
+            print("[!] no peers found")
+            return 0
+        for ip in peers:
+            print(f"[*] found candidate at {ip}:{args.scan_port}")
+        if args.list:
+            return 0
+        reporters = [Reporter(ip, ip, args.scan_port, args.interval, not args.quiet) for ip in peers]
+        for r in reporters:
+            r.start()
+        try:
+            while any(r.is_alive() for r in reporters):
+                time.sleep(0.5)
+        except KeyboardInterrupt:
+            for r in reporters:
+                r.stop()
         return 0
 
     listener = Listener(args.interval, not args.quiet, report=not args.list)
