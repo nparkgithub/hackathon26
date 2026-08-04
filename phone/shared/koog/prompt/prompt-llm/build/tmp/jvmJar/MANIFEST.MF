@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Implementation-Title: prompt-llm
+Implementation-Version: 1.1.1-SNAPSHOT
+Automatic-Module-Name: prompt.llm.jvm
+

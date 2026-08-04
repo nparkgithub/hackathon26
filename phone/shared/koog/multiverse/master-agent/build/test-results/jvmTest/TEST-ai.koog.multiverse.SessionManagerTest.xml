@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="ai.koog.multiverse.SessionManagerTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-03T22:21:53.875Z" hostname="hu-eunicek-lv" time="0.663">
+  <properties/>
+  <testcase name="createsNewSessionWhenIdNull()[jvm]" classname="ai.koog.multiverse.SessionManagerTest" time="0.399"/>
+  <testcase name="getReturnsNullForUnknown()[jvm]" classname="ai.koog.multiverse.SessionManagerTest" time="0.399"/>
+  <testcase name="resumesExistingSessionWithPriorContext()[jvm]" classname="ai.koog.multiverse.SessionManagerTest" time="0.663"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

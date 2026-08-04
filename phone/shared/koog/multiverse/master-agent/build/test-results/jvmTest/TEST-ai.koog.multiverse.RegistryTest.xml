@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="ai.koog.multiverse.RegistryTest" tests="3" skipped="0" failures="0" errors="0" timestamp="2026-08-03T22:21:54.067Z" hostname="hu-eunicek-lv" time="1.058">
+  <properties/>
+  <testcase name="snapshotPrunesExpiredEntries()[jvm]" classname="ai.koog.multiverse.RegistryTest" time="0.441"/>
+  <testcase name="findByModelFiltersReachableAndModel()[jvm]" classname="ai.koog.multiverse.RegistryTest" time="0.436"/>
+  <testcase name="staticDiscoveryLoadsResourceRegistry()[jvm]" classname="ai.koog.multiverse.RegistryTest" time="1.044"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

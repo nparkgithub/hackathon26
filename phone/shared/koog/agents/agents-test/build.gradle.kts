@@ -1,0 +1,50 @@
+import ai.koog.gradle.publish.maven.Publishing.publishToMaven
+
+plugins {
+    id("ai.kotlin.multiplatform")
+    alias(libs.plugins.kotlin.serialization)
+}
+
+kotlin {
+    sourceSets {
+        commonMain {
+            dependencies {
+                api(project(":agents:agents-core"))
+                api(project(":prompt:prompt-executor:prompt-executor-clients:prompt-executor-openai-client"))
+                api(project(":prompt:prompt-tokenizer"))
+
+                api(kotlin("test"))
+
+                api(libs.jetbrains.annotations)
+                api(libs.kotlinx.coroutines.core)
+                api(libs.kotlinx.serialization.json)
+                implementation(libs.oshai.kotlin.logging)
+            }
+        }
+
+        jvmMain {
+            dependencies {
+                implementation(libs.logback.classic)
+            }
+        }
+
+        commonTest {
+            dependencies {
+                implementation(project(":test-utils"))
+                implementation(project(":prompt:prompt-executor:prompt-executor-llms-all"))
+            }
+        }
+
+        jvmTest {
+            dependencies {
+                implementation(project(":agents:agents-features:agents-features-event-handler"))
+                implementation(libs.ktor.client.cio)
+                implementation(project(":agents:agents-ext"))
+            }
+        }
+    }
+
+    explicitApi()
+}
+
+publishToMaven()

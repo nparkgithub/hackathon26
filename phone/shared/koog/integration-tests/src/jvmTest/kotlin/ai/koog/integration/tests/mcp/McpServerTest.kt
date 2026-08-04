@@ -1,0 +1,91 @@
+package ai.koog.integration.tests.mcp
+
+import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.agent.singleRunStrategy
+import ai.koog.agents.core.annotation.InternalAgentsApi
+import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.mcp.McpToolRegistryProvider
+import ai.koog.agents.mcp.metadata.McpMetadataKeys
+import ai.koog.agents.mcp.server.McpServerTransportType
+import ai.koog.agents.mcp.server.startMcpServer
+import ai.koog.agents.testing.network.NetUtil.isPortAvailable
+import ai.koog.agents.testing.tools.RandomNumberTool
+import ai.koog.integration.tests.utils.RetryUtils
+import ai.koog.integration.tests.utils.getLLMClientForProvider
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.llms.MultiLLMPromptExecutor
+import ai.koog.prompt.llm.LLModel
+import io.kotest.matchers.booleans.shouldBeTrue
+import io.kotest.matchers.collections.shouldContainExactly
+import io.kotest.matchers.maps.shouldContain
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.string.shouldContain
+import io.ktor.server.netty.Netty
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeout
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.MethodSource
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+@OptIn(InternalAgentsApi::class)
+class McpServerTest {
+
+    companion object {
+        @JvmStatic
+        fun getModels() = listOf(
+            OpenAIModels.Chat.GPT4o,
+        )
+    }
+
+    @ParameterizedTest
+    @MethodSource("getModels")
+    fun integration_testMcpServerWithSSETransport(model: LLModel) = runTest(timeout = 1.minutes) {
+        val randomNumberTool = RandomNumberTool()
+        randomNumberTool.metadata shouldBe emptyMap()
+
+        val (server, connectors) = startMcpServer(
+            factory = Netty,
+            tools = ToolRegistry {
+                tool(randomNumberTool)
+            },
+            transport = McpServerTransportType.SSE,
+        )
+
+        val port = connectors.firstOrNull()?.port ?: 0
+        port shouldNotBe 0
+
+        try {
+            val toolRegistry = withContext(Dispatchers.Default.limitedParallelism(1)) {
+                withTimeout(20.seconds) {
+                    McpToolRegistryProvider.fromSseUrl("http://localhost:$port")
+                }
+            }
+
+            toolRegistry.tools.map { it.descriptor }.shouldContainExactly(randomNumberTool.descriptor)
+            toolRegistry.tools.forEach { it.metadata shouldContain (McpMetadataKeys.ToolId to it.name) }
+
+            withContext(Dispatchers.Default.limitedParallelism(1)) {
+                withTimeout(40.seconds) {
+                    AIAgent(
+                        promptExecutor = MultiLLMPromptExecutor(getLLMClientForProvider(model.provider)),
+                        strategy = singleRunStrategy(),
+                        llmModel = model,
+                        toolRegistry = toolRegistry,
+                    ).run("Provide random number using ${randomNumberTool.name}, YOU MUST USE TOOLS!")
+                }
+            }.replace("[\\s,_]+".toRegex(), "").shouldContain(randomNumberTool.last.toString())
+        } finally {
+            server.close()
+
+            withContext(Dispatchers.Default.limitedParallelism(1)) {
+                RetryUtils.withRetry {
+                    isPortAvailable(port).shouldBeTrue()
+                }
+            }
+        }
+    }
+}

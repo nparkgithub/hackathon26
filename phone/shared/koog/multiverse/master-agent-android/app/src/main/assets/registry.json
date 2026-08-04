@@ -1,0 +1,35 @@
+{
+  "devices": [
+    {
+      "deviceId": "aws-remote-01",
+      "role": "remote_agent",
+      "endpoint": { "host": "10.0.3.2", "port": 8443 },
+      "capabilities": {
+        "mpquic": "supported",
+        "paths": ["path_0", "path_1"],
+        "models": ["llama3.2-vision", "whisper"]
+      },
+      "interfaces": [
+        { "name": "wifi", "ip": "10.0.1.2", "port": 8443 },
+        { "name": "5g",   "ip": "10.0.2.2", "port": 8443 }
+      ],
+      "status": { "gpuLoad": 0.34, "reachable": true },
+      "ttlSeconds": 30.0
+    },
+    {
+      "deviceId": "xelite-local",
+      "role": "local_agent",
+      "endpoint": { "host": "127.0.0.1", "port": 11434 },
+      "capabilities": {
+        "mpquic": "unsupported",
+        "paths": ["path_0"],
+        "models": ["llama3.2-vision"]
+      },
+      "interfaces": [
+        { "name": "lan", "ip": "127.0.0.1", "port": 11434 }
+      ],
+      "status": { "gpuLoad": 0.10, "reachable": true },
+      "ttlSeconds": 30.0
+    }
+  ]
+}

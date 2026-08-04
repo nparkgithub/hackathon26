@@ -1,0 +1,48 @@
+package ai.koog.agents.core.agent
+
+import ai.koog.agents.core.agent.config.AIAgentConfig
+import ai.koog.agents.core.agent.context.AIAgentFunctionalContext
+import ai.koog.agents.testing.tools.getMockExecutor
+import ai.koog.prompt.Prompt
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.serialization.kotlinx.KotlinxSerializer
+import org.junit.jupiter.api.Test
+import kotlin.test.assertEquals
+
+class LLMWriteSessionJavaApiTest {
+    private val serializer = KotlinxSerializer()
+
+    @Test
+    fun writeSession_allowsPromptSwapAndRequest() {
+        val executor = getMockExecutor(serializer) { }
+
+        val config = AIAgentConfig(
+            prompt = Prompt.builder("write-session")
+                .system("base")
+                .build(),
+            model = OpenAIModels.Chat.GPT4o,
+            maxAgentIterations = 3
+        )
+
+        val agent = AIAgent.builder()
+            .agentConfig(config)
+            .functionalStrategy<String, String>(
+                "useWriteSession"
+            ) { ctx: AIAgentFunctionalContext, input: String ->
+                // Mutate prompt inside writeSession and ensure it restores back
+                ctx.llm().writeSession { session ->
+                    val orig = session.prompt
+                    session.prompt = Prompt.builder("temp").system("temporary").user(input).build()
+                    // restore immediately to validate restoration path without invoking suspend APIs here
+                    session.prompt = orig
+                }
+                // Return a deterministic string to prove strategy executed without using suspend APIs
+                "mutated:$input"
+            }
+            .promptExecutor(executor)
+            .build()
+
+        val result = agent.runBlocking("hello", null)
+        assertEquals("mutated:hello", result)
+    }
+}

@@ -1,0 +1,154 @@
+package ai.koog.prompt.executor.ollama.client.dto
+
+import ai.koog.prompt.executor.clients.serialization.AdditionalPropertiesFlatteningSerializer
+import kotlinx.serialization.SerialName
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+
+/**
+ * Message for the chat API.
+ */
+@Serializable
+internal data class OllamaChatMessageDTO(
+    val role: String,
+    val content: String,
+    val thinking: String? = null,
+    val images: List<String>? = null,
+    @SerialName("tool_calls") val toolCalls: List<OllamaToolCallDTO>? = null
+)
+
+/**
+ * Tool call for the chat API.
+ */
+@Serializable
+internal data class OllamaToolCallDTO(
+    val function: Call
+) {
+    /**
+     * Tool function for the chat API.
+     */
+    @Serializable
+    internal data class Call(
+        val name: String,
+        val arguments: JsonElement
+    )
+}
+
+/**
+ * Tool definition for the chat API.
+ */
+@Serializable
+internal data class OllamaToolDTO(
+    val type: String,
+    val function: Definition
+) {
+    /**
+     * Tool definition for the chat API.
+     */
+    @Serializable
+    internal data class Definition(
+        val name: String,
+        val description: String,
+        val parameters: JsonElement
+    )
+}
+
+/**
+ * Request for the /api/chat endpoint.
+ */
+@Serializable
+internal data class OllamaChatRequestDTO(
+    val model: String,
+    val messages: List<OllamaChatMessageDTO>,
+    val tools: List<OllamaToolDTO>? = null,
+    val format: JsonElement? = null,
+    val options: Options? = null,
+    val stream: Boolean,
+    val think: Boolean? = null,
+    @SerialName("keep_alive") val keepAlive: String? = null,
+    val additionalProperties: Map<String, JsonElement>? = null,
+) {
+    /**
+     * Model options for generation.
+     */
+    @Serializable
+    internal data class Options(
+        val temperature: Double? = null,
+        @SerialName("num_ctx") val numCtx: Long? = null,
+    )
+}
+
+/**
+ * Response from the /api/chat endpoint.
+ */
+@Serializable
+internal data class OllamaChatResponseDTO(
+    val model: String,
+    val message: OllamaChatMessageDTO? = null,
+    val done: Boolean,
+    @SerialName("prompt_eval_count") val promptEvalCount: Int? = null,
+    @SerialName("eval_count") val evalCount: Int? = null
+)
+
+/**
+ * Error response from the /api/chat endpoint.
+ */
+@Serializable
+internal data class OllamaErrorResponseDTO(val error: String)
+
+/**
+ * Represents a request to generate an embedding using a specific model.
+ *
+ * The request includes the model to be used and the prompt text for which the embedding is to be generated.
+ *
+ * @property model The identifier of the model to be used for generating the embedding.
+ * @property input The input text for which the embedding is to be generated.
+ */
+@Serializable
+internal data class EmbeddingBatchRequestDTO(
+    val model: String,
+    val input: List<String>
+)
+
+/**
+ * Represents the response for an embedding operation, containing the result of the operation.
+ *
+ * This class is used for deserializing responses containing vector embeddings that may be
+ * associated with a specific model.
+ *
+ * @property embeddings The list of list double values representing the computed embedding or vector for each input.
+ *                     Each value corresponds to a specific dimension in the generated embedding space.
+ * @property modelId An optional identifier for the model that generated the embedding.
+ */
+@Serializable
+internal data class EmbeddingBatchResponseDTO(
+    @SerialName("embeddings") val embeddings: List<List<Double>>? = null,
+    @SerialName("embedding") val embedding: List<Double>? = null,
+    @SerialName("model") val modelId: String? = null
+) {
+    /**
+     * Normalizes Ollama's two embedding response shapes into a single batch representation.
+     *
+     * Returning `List<List<Double>>` lets the rest of the embedding pipeline treat single-item and
+     * multi-item requests the same way, which keeps downstream similarity/search code independent
+     * from transport-specific response details.
+     */
+    fun normalizedEmbeddings(): List<List<Double>> = embeddings ?: embedding?.let(::listOf) ?: emptyList()
+}
+
+/**
+ * Represents a request to generate an embedding using a specific model.
+ *
+ * The request includes the model to be used and the prompt text for which the embedding is to be generated.
+ *
+ * @property model The identifier of the model to be used for generating the embedding.
+ * @property input The input text for which the embedding is to be generated.
+ */
+@Serializable
+internal data class EmbeddingRequestDTO(
+    val model: String,
+    val input: String
+)
+
+internal object OllamaChatRequestDTOSerializer :
+    AdditionalPropertiesFlatteningSerializer<OllamaChatRequestDTO>(OllamaChatRequestDTO.serializer())

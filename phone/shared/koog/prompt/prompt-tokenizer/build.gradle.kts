@@ -1,0 +1,41 @@
+import ai.koog.gradle.publish.maven.Publishing.publishToMaven
+
+
+plugins {
+    id("ai.kotlin.multiplatform")
+    alias(libs.plugins.kotlin.serialization)
+}
+
+kotlin {
+    sourceSets {
+        commonMain {
+            dependencies {
+                api(project(":prompt:prompt-llm"))
+                api(project(":prompt:prompt-model"))
+                api(libs.kotlinx.serialization.json)
+            }
+        }
+
+        commonTest {
+            dependencies {
+                implementation(kotlin("test"))
+            }
+        }
+
+        jsTest {
+            dependencies {
+                implementation(kotlin("test-js"))
+            }
+        }
+
+        jvmTest {
+            dependencies {
+                implementation(kotlin("test-junit5"))
+            }
+        }
+    }
+
+    explicitApi()
+}
+
+publishToMaven()

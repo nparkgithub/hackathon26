@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="ai.koog.multiverse.ComputeApiTest" tests="5" skipped="0" failures="0" errors="0" timestamp="2026-08-03T22:21:54.219Z" hostname="hu-eunicek-lv" time="3.143">
+  <properties/>
+  <testcase name="registryDevicesReturnsFixtureDevicesWithExpectedFields()[jvm]" classname="ai.koog.multiverse.ComputeApiTest" time="3.143"/>
+  <testcase name="healthReportsRegistryDevices()[jvm]" classname="ai.koog.multiverse.ComputeApiTest" time="3.149"/>
+  <testcase name="computeReturnsAssessmentJson()[jvm]" classname="ai.koog.multiverse.ComputeApiTest" time="3.14"/>
+  <testcase name="computeRejectsMissingImage()[jvm]" classname="ai.koog.multiverse.ComputeApiTest" time="3.111"/>
+  <testcase name="routingPolicyReflectsPreferRemoteDecisionForFixture()[jvm]" classname="ai.koog.multiverse.ComputeApiTest" time="3.15"/>
+  <system-out><![CDATA[15:21:57.042 [DefaultDispatcher-worker-9 @call-context#12] INFO io.ktor.test -- No ktor.deployment.watch patterns specified, automatic reload is not active.
+15:21:57.042 [DefaultDispatcher-worker-6 @call-context#11] INFO io.ktor.test -- No ktor.deployment.watch patterns specified, automatic reload is not active.
+15:21:57.042 [DefaultDispatcher-worker-5 @call-context#15] INFO io.ktor.test -- No ktor.deployment.watch patterns specified, automatic reload is not active.
+15:21:57.042 [DefaultDispatcher-worker-7 @call-context#14] INFO io.ktor.test -- No ktor.deployment.watch patterns specified, automatic reload is not active.
+15:21:57.042 [DefaultDispatcher-worker-8 @call-context#13] INFO io.ktor.test -- No ktor.deployment.watch patterns specified, automatic reload is not active.
+15:21:57.134 [DefaultDispatcher-worker-8 @call-context#13] INFO io.ktor.test -- Application started in 0.124 seconds.
+15:21:57.134 [DefaultDispatcher-worker-9 @call-context#12] INFO io.ktor.test -- Application started in 0.124 seconds.
+15:21:57.134 [DefaultDispatcher-worker-6 @call-context#11] INFO io.ktor.test -- Application started in 0.124 seconds.
+15:21:57.134 [DefaultDispatcher-worker-5 @call-context#15] INFO io.ktor.test -- Application started in 0.124 seconds.
+15:21:57.134 [DefaultDispatcher-worker-7 @call-context#14] INFO io.ktor.test -- Application started in 0.124 seconds.
+15:21:57.139 [DefaultDispatcher-worker-12 @coroutine#22] INFO io.ktor.test -- Responding at http://localhost:80
+15:21:57.139 [DefaultDispatcher-worker-11 @coroutine#24] INFO io.ktor.test -- Responding at http://localhost:80
+15:21:57.139 [DefaultDispatcher-worker-11 @coroutine#24] INFO io.ktor.test -- Responding at https://localhost:443
+15:21:57.139 [DefaultDispatcher-worker-14 @coroutine#21] INFO io.ktor.test -- Responding at http://localhost:80
+15:21:57.139 [DefaultDispatcher-worker-13 @coroutine#23] INFO io.ktor.test -- Responding at http://localhost:80
+15:21:57.139 [DefaultDispatcher-worker-12 @coroutine#22] INFO io.ktor.test -- Responding at https://localhost:443
+15:21:57.139 [DefaultDispatcher-worker-2 @coroutine#25] INFO io.ktor.test -- Responding at http://localhost:80
+15:21:57.140 [DefaultDispatcher-worker-14 @coroutine#21] INFO io.ktor.test -- Responding at https://localhost:443
+15:21:57.140 [DefaultDispatcher-worker-13 @coroutine#23] INFO io.ktor.test -- Responding at https://localhost:443
+15:21:57.141 [DefaultDispatcher-worker-2 @coroutine#25] INFO io.ktor.test -- Responding at https://localhost:443
+]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

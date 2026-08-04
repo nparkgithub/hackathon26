@@ -1,0 +1,38 @@
+import ai.koog.gradle.publish.maven.Publishing.publishToMaven
+
+
+plugins {
+    id("ai.kotlin.multiplatform")
+    alias(libs.plugins.kotlin.serialization)
+}
+
+kotlin {
+    sourceSets {
+        commonMain {
+            dependencies {
+                api(libs.jetbrains.annotations)
+                api(project(":prompt:prompt-executor:prompt-executor-clients:prompt-executor-openai-client-base"))
+                api(project(":prompt:prompt-structure"))
+                implementation(libs.oshai.kotlin.logging)
+            }
+        }
+
+        jvmTest {
+            dependencies {
+                implementation(project(":test-utils"))
+            }
+        }
+
+        jvmTest {
+            dependencies {
+                implementation(project(":http-client:http-client-ktor"))
+                implementation(libs.ktor.client.mock)
+                implementation(libs.ktor.client.cio)
+            }
+        }
+    }
+
+    explicitApi()
+}
+
+publishToMaven()

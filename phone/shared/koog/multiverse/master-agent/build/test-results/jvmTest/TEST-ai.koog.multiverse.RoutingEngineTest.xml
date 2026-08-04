@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="ai.koog.multiverse.RoutingEngineTest" tests="9" skipped="0" failures="0" errors="0" timestamp="2026-08-03T22:21:54.378Z" hostname="hu-eunicek-lv" time="0.827">
+  <properties/>
+  <testcase name="fallsBackToLocalWhenNoRemote()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.644"/>
+  <testcase name="rankRemoteExcludesUnreachableAndNonServingDevices()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.809"/>
+  <testcase name="mpUnknownIsNotEligibleForMultipath()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.81"/>
+  <testcase name="remoteSinglePathWhenOnlyWifiUp()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.814"/>
+  <testcase name="remoteSinglePathWhenMpUnsupported()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.814"/>
+  <testcase name="remoteMultipathWhenSupportedAndBothPathsUp()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.815"/>
+  <testcase name="rankRemoteOrdersByAscendingGpuLoadAndMatchesChooseRemote()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.812"/>
+  <testcase name="rankLocalOrdersByAscendingGpuLoadAndMatchesChooseLocal()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.819"/>
+  <testcase name="throwsWhenNoTargetServesModel()[jvm]" classname="ai.koog.multiverse.RoutingEngineTest" time="0.825"/>
+  <system-out><![CDATA[]]></system-out>
+  <system-err><![CDATA[]]></system-err>
+</testsuite>

@@ -1,0 +1,82 @@
+package ai.koog.agents.core
+
+import ai.koog.agents.core.tools.ToolDescriptor
+import ai.koog.prompt.Prompt
+import ai.koog.prompt.dsl.ModerationResult
+import ai.koog.prompt.executor.model.PromptExecutor
+import ai.koog.prompt.llm.LLModel
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.MessagePart
+import ai.koog.prompt.message.ResponseMetaInfo
+import ai.koog.prompt.streaming.StreamFrame
+import ai.koog.prompt.streaming.toStreamFrames
+import ai.koog.utils.time.KoogClock
+import io.ktor.utils.io.CancellationException
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlin.time.Instant
+
+object CalculatorChatExecutor : PromptExecutor() {
+    private val json = Json {
+        ignoreUnknownKeys = true
+        allowStructuredMapKeys = true
+    }
+
+    private val plusAliases = listOf("add", "sum", "plus")
+
+    val testClock: KoogClock = KoogClock { Instant.parse("2023-01-01T00:00:00Z") }
+
+    override suspend fun execute(prompt: Prompt, model: LLModel, tools: List<ToolDescriptor>): Message.Assistant {
+        val input = prompt.messages.filterIsInstance<Message.User>()
+            .joinToString("\n") { msg -> msg.parts.filterIsInstance<MessagePart.Text>().joinToString("\n") { it.text } }
+        val numbers = input.split(Regex("[^0-9.]")).filter { it.isNotEmpty() }.map { it.toFloat() }
+        return when {
+            plusAliases.any { it in input } && tools.contains(CalculatorTools.PlusTool.descriptor) -> {
+                Message.Assistant(
+                    parts = listOf(
+                        MessagePart.Tool.Call(
+                            id = "1",
+                            tool = CalculatorTools.PlusTool.name,
+                            args = json.encodeToString(
+                                buildJsonObject {
+                                    put("a", numbers[0])
+                                    put("b", numbers[1])
+                                }
+                            )
+                        )
+                    ),
+                    metaInfo = ResponseMetaInfo.create(testClock)
+                )
+            }
+
+            else -> Message.Assistant("Unknown operation", metaInfo = ResponseMetaInfo.create(testClock))
+        }
+    }
+
+    override fun executeStreaming(
+        prompt: Prompt,
+        model: LLModel,
+        tools: List<ToolDescriptor>
+    ): Flow<StreamFrame> =
+        flow {
+            try {
+                execute(prompt, model, tools).toStreamFrames().forEach { frame -> emit(frame) }
+            } catch (t: CancellationException) {
+                throw t
+            } catch (t: Throwable) {
+                println("[DEBUG_LOG] Error while emitting response: ${t::class.simpleName}(${t.message})")
+            }
+        }
+
+    override suspend fun moderate(
+        prompt: Prompt,
+        model: LLModel
+    ): ModerationResult {
+        throw UnsupportedOperationException("Moderation is not needed for CalculatorExecutor")
+    }
+
+    override fun close() {}
+}

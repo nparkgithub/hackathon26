@@ -1,0 +1,5 @@
+Manifest-Version: 1.0
+Implementation-Title: prompt-executor-llms-all
+Implementation-Version: 1.1.1-beta-SNAPSHOT
+Automatic-Module-Name: prompt.executor.llms.all.jvm
+

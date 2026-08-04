@@ -1,0 +1,66 @@
+package ai.koog.prompt.executor.clients.openai
+
+import ai.koog.http.client.ktor.KtorKoogHttpClient
+import ai.koog.prompt.llm.LLModel
+import ai.koog.prompt.params.LLMParams
+import io.kotest.matchers.shouldBe
+import org.junit.jupiter.api.TestInstance
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
+import java.util.stream.Stream
+import kotlin.reflect.KClass
+
+@TestInstance(TestInstance.Lifecycle.PER_CLASS)
+class OpenAILLMClientTest {
+
+    fun openAiClientTestCases(): Stream<Arguments> =
+        Stream.of(
+            Arguments.of(
+                LLMParams(),
+                OpenAIModels.Chat.GPT4o,
+                OpenAIChatParams::class,
+            ),
+            Arguments.of(
+                LLMParams(),
+                OpenAIModels.Chat.GPT5_5,
+                OpenAIChatParams::class,
+            ),
+            Arguments.of(
+                LLMParams(),
+                OpenAIModels.Chat.GPT5_5Pro,
+                OpenAIResponsesParams::class,
+            ),
+            Arguments.of(
+                OpenAIChatParams(),
+                OpenAIModels.Chat.GPT4o,
+                OpenAIChatParams::class,
+            ),
+            Arguments.of(
+                OpenAIResponsesParams(),
+                OpenAIModels.Chat.GPT4o,
+                OpenAIResponsesParams::class,
+            ),
+            Arguments.of(
+                OpenAIChatParams(),
+                OpenAIModels.Audio.GPT4oMiniAudio,
+                OpenAIChatParams::class,
+            )
+        )
+
+    @ParameterizedTest
+    @MethodSource("openAiClientTestCases")
+    fun `Should use determine Params by input params and model`(
+        inputParams: LLMParams,
+        model: LLModel,
+        expectedClass: KClass<out OpenAIChatParams>
+    ) {
+        val client = OpenAILLMClient(apiKey = "dummy-key", httpClientFactory = KtorKoogHttpClient.Factory())
+        val result = client.determineParams(
+            params = inputParams,
+            model = model,
+        )
+
+        result::class shouldBe expectedClass
+    }
+}

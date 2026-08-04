@@ -1,0 +1,1911 @@
+package ai.koog.integration.tests.agent
+
+import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.agent.config.AIAgentConfig
+import ai.koog.agents.core.agent.entity.AIAgentStorage
+import ai.koog.agents.core.agent.entity.createStorageKey
+import ai.koog.agents.core.agent.execution.path
+import ai.koog.agents.core.agent.functionalStrategy
+import ai.koog.agents.core.agent.session.AdditionalInputs
+import ai.koog.agents.core.agent.singleRunStrategy
+import ai.koog.agents.core.agent.tools.agentContext
+import ai.koog.agents.core.annotation.InternalAgentsApi
+import ai.koog.agents.core.dsl.builder.ParallelNodeExecutionResult
+import ai.koog.agents.core.dsl.builder.node
+import ai.koog.agents.core.dsl.builder.parallel
+import ai.koog.agents.core.dsl.builder.strategy
+import ai.koog.agents.core.dsl.extension.Concept
+import ai.koog.agents.core.dsl.extension.FactType
+import ai.koog.agents.core.dsl.extension.HistoryCompressionStrategy
+import ai.koog.agents.core.dsl.extension.ReceivedToolResults
+import ai.koog.agents.core.dsl.extension.ToolCalls
+import ai.koog.agents.core.dsl.extension.nodeExecuteTools
+import ai.koog.agents.core.dsl.extension.nodeLLMCompressHistory
+import ai.koog.agents.core.dsl.extension.nodeLLMRequest
+import ai.koog.agents.core.dsl.extension.nodeLLMRequestWithoutTools
+import ai.koog.agents.core.dsl.extension.nodeLLMSendToolResults
+import ai.koog.agents.core.dsl.extension.onTextMessage
+import ai.koog.agents.core.dsl.extension.onToolCalls
+import ai.koog.agents.core.environment.ReceivedToolResult
+import ai.koog.agents.core.environment.ToolResultKind
+import ai.koog.agents.core.feature.AIAgentGraphFeature
+import ai.koog.agents.core.feature.config.FeatureConfig
+import ai.koog.agents.core.feature.pipeline.AIAgentGraphPipeline
+import ai.koog.agents.core.tools.ToolBase
+import ai.koog.agents.core.tools.ToolCallMetadata
+import ai.koog.agents.core.tools.ToolDescriptor
+import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.core.tools.annotations.InternalAgentToolsApi
+import ai.koog.agents.core.tools.annotations.LLMDescription
+import ai.koog.agents.core.tools.annotations.Tool
+import ai.koog.agents.core.tools.reflect.asTool
+import ai.koog.agents.ext.agent.reActStrategy
+import ai.koog.agents.ext.agent.subgraphWithTask
+import ai.koog.agents.features.eventHandler.feature.EventHandler
+import ai.koog.agents.features.eventHandler.feature.EventHandlerConfig
+import ai.koog.agents.snapshot.feature.AgentCheckpointData
+import ai.koog.agents.snapshot.feature.GraphCheckpointProperties
+import ai.koog.agents.snapshot.feature.Persistence
+import ai.koog.agents.snapshot.feature.isTombstone
+import ai.koog.agents.snapshot.feature.withPersistence
+import ai.koog.agents.snapshot.providers.InMemoryPersistenceStorageProvider
+import ai.koog.agents.snapshot.providers.file.JVMFilePersistenceStorageProvider
+import ai.koog.integration.tests.utils.Models
+import ai.koog.integration.tests.utils.RetryUtils.withRetry
+import ai.koog.integration.tests.utils.tools.CalculateSumTool
+import ai.koog.integration.tests.utils.tools.CalculatorToolNoArgs
+import ai.koog.integration.tests.utils.tools.DelayTool
+import ai.koog.integration.tests.utils.tools.GetTransactionsTool
+import ai.koog.integration.tests.utils.tools.SimpleCalculatorTool
+import ai.koog.prompt.Prompt
+import ai.koog.prompt.dsl.ModerationResult
+import ai.koog.prompt.dsl.prompt
+import ai.koog.prompt.executor.clients.anthropic.AnthropicParams
+import ai.koog.prompt.executor.clients.anthropic.models.AnthropicThinking
+import ai.koog.prompt.executor.clients.google.GoogleModels
+import ai.koog.prompt.executor.clients.google.GoogleParams
+import ai.koog.prompt.executor.clients.google.models.GoogleThinkingConfig
+import ai.koog.prompt.executor.clients.openai.OpenAIChatParams
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.clients.openai.OpenAIResponsesParams
+import ai.koog.prompt.executor.clients.openai.base.models.ReasoningEffort
+import ai.koog.prompt.executor.clients.openai.models.ReasoningConfig
+import ai.koog.prompt.executor.model.PromptExecutor
+import ai.koog.prompt.llm.LLMCapability
+import ai.koog.prompt.llm.LLMProvider
+import ai.koog.prompt.llm.LLModel
+import ai.koog.prompt.message.Message
+import ai.koog.prompt.message.MessagePart
+import ai.koog.prompt.message.RequestMetaInfo
+import ai.koog.prompt.message.ResponseMetaInfo
+import ai.koog.prompt.params.LLMParams
+import ai.koog.prompt.params.LLMParams.ToolChoice
+import ai.koog.prompt.streaming.StreamFrame
+import ai.koog.serialization.JSONPrimitive
+import ai.koog.serialization.kotlinx.KotlinxSerializer
+import ai.koog.serialization.typeToken
+import ai.koog.utils.time.KoogClock
+import io.kotest.assertions.withClue
+import io.kotest.inspectors.shouldForAll
+import io.kotest.inspectors.shouldForAny
+import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.comparables.shouldBeLessThan
+import io.kotest.matchers.ints.shouldBeGreaterThan
+import io.kotest.matchers.ints.shouldBeGreaterThanOrEqual
+import io.kotest.matchers.nulls.shouldNotBeNull
+import io.kotest.matchers.should
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.contain
+import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.string.shouldNotBeBlank
+import io.kotest.matchers.string.shouldNotBeEmpty
+import io.kotest.matchers.string.shouldNotContain
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.emptyFlow
+import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import org.junit.jupiter.api.Assumptions.assumeTrue
+import org.junit.jupiter.api.BeforeAll
+import org.junit.jupiter.api.Disabled
+import org.junit.jupiter.api.io.TempDir
+import org.junit.jupiter.params.ParameterizedTest
+import org.junit.jupiter.params.provider.Arguments
+import org.junit.jupiter.params.provider.MethodSource
+import java.nio.file.Path
+import java.util.Base64
+import java.util.stream.Stream
+import kotlin.io.path.readBytes
+import kotlin.test.Test
+import kotlin.test.assertFailsWith
+import kotlin.test.assertTrue
+import kotlin.time.Duration.Companion.minutes
+import kotlin.time.Duration.Companion.seconds
+
+@Tool
+@LLMDescription("Looks up evidence for the subgraph regression test.")
+fun lookupSubgraphEvidence(
+    @LLMDescription("Topic to look up.")
+    topic: String
+): String = "evidence:$topic"
+
+@Tool
+@LLMDescription("Finishes the subgraph regression test.")
+fun finishSubgraphWithEvidence(
+    @LLMDescription("Final result for the subgraph.")
+    result: String
+): String = "finished:$result"
+
+class AIAgentIntegrationTest : AIAgentTestBase() {
+
+    private fun forceOneToolNoReasoningParams(model: LLModel): LLMParams = when (model.provider.id) {
+        LLMProvider.Google.id -> GoogleParams(
+            thinkingConfig = GoogleThinkingConfig(includeThoughts = false)
+        )
+
+        LLMProvider.Anthropic.id -> AnthropicParams(
+            thinking = AnthropicThinking.Disabled()
+        )
+
+        LLMProvider.OpenAI.id -> if (model.capabilities?.contains(LLMCapability.OpenAIEndpoint.Responses) == true) {
+            OpenAIResponsesParams(reasoning = ReasoningConfig(effort = ReasoningEffort.NONE))
+        } else {
+            OpenAIChatParams(reasoningEffort = ReasoningEffort.NONE)
+        }
+
+        LLMProvider.MistralAI.id,
+        LLMProvider.OpenRouter.id,
+        LLMProvider.Bedrock.id,
+        LLMProvider.Ollama.id,
+        LLMProvider.DeepSeek.id -> LLMParams()
+
+        else -> throw IllegalArgumentException("Unsupported provider for forceOneToolNoReasoningParams: ${model.provider.id}")
+    }
+
+    companion object {
+        private lateinit var testResourcesDir: Path
+
+        @JvmStatic
+        @BeforeAll
+        fun setup() {
+            AIAgentTestBase.setup()
+            testResourcesDir = AIAgentTestBase.testResourcesDir
+        }
+
+        @JvmStatic
+        fun modelsWithVisionCapability(): Stream<Arguments> = AIAgentTestBase.modelsWithVisionCapability()
+
+        @JvmStatic
+        fun reasoningIntervals(): Stream<Int> {
+            return listOf(1, 2, 3).stream()
+        }
+
+        @JvmStatic
+        fun historyCompressionStrategies(): Stream<Arguments> {
+            return Stream.of(
+                Arguments.of(HistoryCompressionStrategy.WholeHistory, "WholeHistory"),
+                Arguments.of(
+                    HistoryCompressionStrategy.WholeHistoryMultipleSystemMessages,
+                    "WholeHistoryMultipleSystemMessages"
+                ),
+                Arguments.of(HistoryCompressionStrategy.FromLastNMessages(1), "FromLastNMessages(1)"),
+                Arguments.of(
+                    HistoryCompressionStrategy.FromTimestamp(KoogClock.System.now().minus(1.seconds)),
+                    "FromTimestamp"
+                ),
+                Arguments.of(HistoryCompressionStrategy.Chunked(2), "Chunked(2)"),
+                Arguments.of(
+                    HistoryCompressionStrategy.FactRetrieval(
+                        Concept(
+                            keyword = "user-identity",
+                            description = "Who the user is, including any self-description they have provided.",
+                            factType = FactType.MULTIPLE
+                        )
+                    ),
+                    "FactRetrieval"
+                )
+            )
+        }
+    }
+
+    val twoToolsRegistry = ToolRegistry {
+        tool(SimpleCalculatorTool)
+        tool(DelayTool)
+    }
+
+    val bankingToolsRegistry = ToolRegistry {
+        tool(GetTransactionsTool)
+        tool(CalculateSumTool)
+    }
+
+    @Serializable
+    private data class RawMetadataToolArgs(val value: String)
+
+    @Serializable
+    private data class RawMetadataToolResult(val echoed: String, val length: Int)
+
+    private class RawMetadataTool : ToolBase<RawMetadataToolArgs, RawMetadataToolResult>(
+        argsType = typeToken<RawMetadataToolArgs>(),
+        resultType = typeToken<RawMetadataToolResult>(),
+        name = "raw_metadata_tool",
+        description = "Echoes input and observes invocation metadata.",
+    ) {
+        val observedMetadata = mutableListOf<ToolCallMetadata>()
+
+        override suspend fun execute(
+            args: RawMetadataToolArgs,
+            metadata: ToolCallMetadata
+        ): RawMetadataToolResult {
+            observedMetadata += metadata
+            return RawMetadataToolResult(echoed = "echo:${args.value}", length = args.value.length)
+        }
+    }
+
+    private class StaticMetadataFeatureConfig : FeatureConfig()
+
+    private object StaticMetadataFeature : AIAgentGraphFeature<StaticMetadataFeatureConfig, Unit> {
+        override val key = createStorageKey<Unit>("integration-static-tool-metadata")
+
+        override fun createInitialConfig(agentConfig: AIAgentConfig): StaticMetadataFeatureConfig =
+            StaticMetadataFeatureConfig()
+
+        override fun install(config: StaticMetadataFeatureConfig, pipeline: AIAgentGraphPipeline) {
+            pipeline.provideToolCallMetadata(this) {
+                mapOf(
+                    "integration.trace.id" to "trace-from-feature",
+                    "integration.feature" to "static-metadata",
+                )
+            }
+        }
+    }
+
+    private object ThrowingPromptExecutor : PromptExecutor() {
+        override suspend fun execute(
+            prompt: Prompt,
+            model: LLModel,
+            tools: List<ToolDescriptor>
+        ): Message.Assistant = error("This test does not call the LLM")
+
+        override fun executeStreaming(
+            prompt: Prompt,
+            model: LLModel,
+            tools: List<ToolDescriptor>
+        ): Flow<StreamFrame> = emptyFlow()
+
+        override suspend fun moderate(
+            prompt: Prompt,
+            model: LLModel
+        ): ModerationResult = error("This test does not call moderation")
+
+        override fun close() = Unit
+    }
+
+    private class SubgraphPromptCapturingExecutor : PromptExecutor() {
+        private var calls = 0
+        val prompts = mutableListOf<Prompt>()
+
+        override suspend fun execute(
+            prompt: Prompt,
+            model: LLModel,
+            tools: List<ToolDescriptor>
+        ): Message.Assistant {
+            prompts += prompt
+            calls += 1
+
+            return when (calls) {
+                1 -> {
+                    val lookupToolName = tools.single { it.name.contains("lookupSubgraphEvidence") }.name
+                    Message.Assistant(
+                        parts = listOf(
+                            MessagePart.Tool.Call(
+                                id = "lookup-call",
+                                tool = lookupToolName,
+                                args = buildJsonObject { put("topic", "koog") },
+                            ),
+                        ),
+                        metaInfo = ResponseMetaInfo.create(KoogClock.System),
+                        id = "subgraph-lookup-call",
+                    )
+                }
+
+                2 -> {
+                    val finishToolName = tools.single { it.name.contains("finishSubgraphWithEvidence") }.name
+                    Message.Assistant(
+                        parts = listOf(
+                            MessagePart.Tool.Call(
+                                id = "finish-call",
+                                tool = finishToolName,
+                                args = buildJsonObject { put("result", "koog") },
+                            ),
+                        ),
+                        metaInfo = ResponseMetaInfo.create(KoogClock.System),
+                        id = "subgraph-finish-call",
+                    )
+                }
+
+                else -> {
+                    Message.Assistant(
+                        content = "All subgraph tool results are present.",
+                        metaInfo = ResponseMetaInfo.create(KoogClock.System),
+                        id = "after-subgraph-$calls",
+                    )
+                }
+            }
+        }
+
+        override fun executeStreaming(
+            prompt: Prompt,
+            model: LLModel,
+            tools: List<ToolDescriptor>
+        ): Flow<StreamFrame> = emptyFlow()
+
+        override suspend fun moderate(
+            prompt: Prompt,
+            model: LLModel
+        ): ModerationResult = ModerationResult(isHarmful = false, categories = emptyMap())
+
+        override fun close() = Unit
+    }
+
+    val twoToolsPrompt = """
+        I need you to perform two operations:
+        1. Calculate 7 times 2
+        2. Wait for 500 milliseconds
+
+        Respond briefly after completing both tasks. DO NOT EXCEED THE LIMIT OF 20 WORDS.
+    """.trimIndent()
+
+    private fun getSingleRunAgentWithRunMode(
+        model: LLModel,
+        parallelTools: Boolean,
+        toolRegistry: ToolRegistry = twoToolsRegistry,
+        eventHandlerConfig: EventHandlerConfig.() -> Unit,
+    ) = AIAgent(
+        promptExecutor = getExecutor(model),
+        strategy = singleRunStrategy(parallelTools = parallelTools),
+        agentConfig = AIAgentConfig(
+            prompt = prompt(
+                id = "single-run-agent",
+                params = LLMParams(
+                    temperature = 0.0,
+                    toolChoice = ToolChoice.Auto,
+                )
+            ) {
+                system {
+                    +"You are a helpful assistant. "
+                    +"You must complete the task by calling the provided tools when needed. "
+                    +"For this task, call the required tools first, then return a brief final answer. "
+                    +"Do not ask follow-up questions."
+                }
+            },
+            model = model,
+            maxAgentIterations = 30,
+        ),
+        toolRegistry = toolRegistry,
+        installFeatures = {
+            install(EventHandler.Feature, eventHandlerConfig)
+        },
+    )
+
+    private fun buildHistoryCompressionWithToolsStrategy(
+        strategy: HistoryCompressionStrategy,
+        compressBeforeToolResult: Boolean,
+    ) = strategy<String, Pair<String, List<Message>>>("history-compression-with-tools-test") {
+        val callLLM by nodeLLMRequest(name = "callLLM")
+        val executeTool by nodeExecuteTools("execute_tool")
+        val compressResponse by nodeLLMCompressHistory<Message.Assistant>(
+            name = "compress_history",
+            strategy = strategy
+        )
+        val compressToolResult by nodeLLMCompressHistory<ReceivedToolResults>(
+            name = "compress_history",
+            strategy = strategy
+        )
+        val sendToolResult by nodeLLMSendToolResults("send_tool_result")
+
+        edge(nodeStart forwardTo callLLM)
+        if (compressBeforeToolResult) {
+            edge(callLLM forwardTo executeTool onToolCalls { true })
+            executeTool then compressToolResult then sendToolResult
+            edge(sendToolResult forwardTo executeTool onToolCalls { it.tool == SimpleCalculatorTool.name })
+            edge(sendToolResult forwardTo nodeFinish onTextMessage { true } transformed { it to llm.prompt.messages })
+        } else {
+            callLLM then compressResponse
+            edge(compressResponse forwardTo executeTool onToolCalls { it.tool == SimpleCalculatorTool.name })
+            edge(compressResponse forwardTo nodeFinish onTextMessage { true } transformed { it to llm.prompt.messages })
+            executeTool then sendToolResult then compressResponse
+        }
+    }
+
+    private fun assertHistoryCompressionWithTools(
+        errors: Collection<Any>,
+        actualToolCalls: Collection<String>,
+        result: String,
+        promptMessages: List<Message>?,
+        strategyName: String,
+    ) {
+        withClue("No errors should occur during agent execution with $strategyName, got: [${errors.joinToString("\n")}]") {
+            errors.shouldBeEmpty()
+        }
+        withClue("The ${SimpleCalculatorTool.name} tool was not called with $strategyName") {
+            actualToolCalls shouldContain SimpleCalculatorTool.name
+        }
+        result.shouldNotBeBlank()
+        promptMessages shouldNotBeNull {
+            withClue("System messages should be preserved after compression with $strategyName") {
+                filterIsInstance<Message.System>().shouldNotBeEmpty()
+            }
+            withClue("System message content should not be empty after compression with $strategyName") {
+                first().parts.any()
+            }
+        }
+    }
+
+    private fun runMultipleToolsTest(model: LLModel, parallelTools: Boolean) = runTest(timeout = 300.seconds) {
+        Models.assumeAvailable(model.provider)
+        Models.assumeEnumToolCallsAreStable(model, "single-run integration with calculator enum tool arguments")
+        assumeTrue(model.supports(LLMCapability.Tools), "Model $model does not support tools")
+        assumeTrue(model.id !== OpenAIModels.Chat.O1.id, "Model $model flaks when calling parallel tools")
+        assumeTrue(model.id !== GoogleModels.Gemini2_5Flash.id, "Model $model flaks when calling parallel tools")
+
+        withRetry(5) {
+            runWithTracking { eventHandlerConfig, state ->
+                val multiToolAgent =
+                    getSingleRunAgentWithRunMode(model, parallelTools, eventHandlerConfig = eventHandlerConfig)
+                multiToolAgent.run(twoToolsPrompt)
+
+                with(state) {
+                    if (parallelTools) {
+                        withClue("There should be at least 2 tool executions in a parallel multiple-tools scenario") {
+                            actualToolCalls.size shouldBeGreaterThanOrEqual 2
+                        }
+                        withClue("Both expected tools should be executed in a parallel multiple-tools scenario") {
+                            actualToolCalls shouldContain SimpleCalculatorTool.name
+                            actualToolCalls shouldContain DelayTool.name
+                        }
+                    } else {
+                        withClue("There should be at least 2 tool executions in a sequential multiple-tools scenario") {
+                            actualToolCalls.size shouldBeGreaterThanOrEqual 2
+                        }
+                        withClue("Both expected tools should be executed in a sequential multiple-tools scenario") {
+                            actualToolCalls shouldContain SimpleCalculatorTool.name
+                            actualToolCalls shouldContain DelayTool.name
+                        }
+                        withClue("Calculator tool should execute before delay tool in a sequential multiple-tools scenario") {
+                            actualToolCalls.indexOf(SimpleCalculatorTool.name) shouldBeLessThan
+                                actualToolCalls.indexOf(DelayTool.name)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @OptIn(InternalAgentsApi::class)
+    @Test
+    fun integration_AIAgentToolExecutionKeepsMetadataEventsAndRawResultObject() = runTest(timeout = 30.seconds) {
+        val tool = RawMetadataTool()
+        val completedResults = mutableListOf<Any?>()
+        val completedToolCallIds = mutableListOf<String?>()
+        val strategy = strategy<ToolCalls, ReceivedToolResult>("raw-tool-result-object-strategy") {
+            val executeTool by nodeExecuteTools("execute_tool")
+
+            edge(nodeStart forwardTo executeTool)
+            edge(executeTool forwardTo nodeFinish transformed { it.toolResults.single() })
+        }
+
+        val agent = AIAgent(
+            promptExecutor = ThrowingPromptExecutor,
+            strategy = strategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("raw-tool-result-object-test") {
+                    system("No LLM calls are expected in this graph.")
+                },
+                model = OpenAIModels.Chat.GPT4_1,
+                maxAgentIterations = 3,
+            ),
+            toolRegistry = ToolRegistry {
+                tool(tool)
+            },
+            installFeatures = {
+                install(StaticMetadataFeature) {}
+                install(EventHandler.Feature) {
+                    onToolCallCompleted { eventContext ->
+                        completedToolCallIds += eventContext.toolCallId
+                        completedResults += eventContext.toolResult
+                    }
+                }
+            },
+        )
+
+        val result = agent.run(
+            ToolCalls(
+                listOf(
+                    MessagePart.Tool.Call(
+                        id = "metadata-call-1",
+                        tool = tool.name,
+                        args = """{"value":"koog"}""",
+                    )
+                )
+            )
+        )
+
+        result.resultKind shouldBe ToolResultKind.Success
+        result.resultObject shouldBe RawMetadataToolResult(echoed = "echo:koog", length = 4)
+        result.output shouldContain "echo:koog"
+        result.tool shouldBe tool.name
+        result.id shouldBe "metadata-call-1"
+
+        completedToolCallIds shouldContain "metadata-call-1"
+        completedResults.shouldNotBeEmpty()
+
+        tool.observedMetadata.single().shouldNotBeNull {
+            this["integration.trace.id"] shouldBe "trace-from-feature"
+            this["integration.feature"] shouldBe "static-metadata"
+            agentContext.shouldNotBeNull()
+        }
+    }
+
+    @OptIn(InternalAgentToolsApi::class)
+    @Test
+    fun integration_SubgraphWithTaskKeepsAllToolResultsBeforeNextPrompt() = runTest(timeout = 30.seconds) {
+        val executor = SubgraphPromptCapturingExecutor()
+        val lookupTool = ::lookupSubgraphEvidence.asTool()
+
+        val strategy = strategy<String, String>("subgraph-tool-result-prompt-regression") {
+            val subtask by subgraphWithTask<String, String>(
+                tools = listOf(lookupTool),
+                finishToolFunction = ::finishSubgraphWithEvidence,
+                llmParams = LLMParams(toolChoice = ToolChoice.Required),
+            ) { input ->
+                "Lookup evidence for '$input', then finish the subtask."
+            }
+            val verifyPrompt by nodeLLMRequest("verify_prompt")
+
+            nodeStart then subtask
+            edge(subtask forwardTo verifyPrompt transformed { "Verify subgraph results for: $it" })
+            edge(verifyPrompt forwardTo nodeFinish onTextMessage { true })
+        }
+
+        val agent = AIAgent(
+            promptExecutor = executor,
+            strategy = strategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("subgraph-tool-result-prompt-regression") {
+                    system("You execute subgraph regression tests.")
+                },
+                model = OpenAIModels.Chat.GPT4_1,
+                maxAgentIterations = 20,
+            ),
+            toolRegistry = ToolRegistry {
+                tool(lookupTool)
+                tool(::finishSubgraphWithEvidence)
+            },
+        )
+
+        val result = agent.run("koog")
+        result shouldBe "All subgraph tool results are present."
+
+        val promptAfterSubgraph = executor.prompts.last()
+        val toolResults = promptAfterSubgraph.messages
+            .flatMap { it.parts }
+            .filterIsInstance<MessagePart.Tool.Result>()
+
+        toolResults.shouldForAny {
+            it.id == "lookup-call" &&
+                it.tool == "lookupSubgraphEvidence" &&
+                it.output.contains("evidence:koog")
+        }
+        toolResults.shouldForAny {
+            it.id == "finish-call" &&
+                it.tool == "finishSubgraphWithEvidence" &&
+                it.output.contains("finished:koog")
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentShouldNotCallToolsByDefault(model: LLModel) = runTest {
+        Models.assumeAvailable(model.provider)
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val executor = getExecutor(model)
+
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    systemPrompt = systemPrompt,
+                    llmModel = model,
+                    temperature = 1.0,
+                    maxIterations = 10,
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) },
+                )
+                agent.run("Repeat what I say: hello, I'm good.")
+                // by default, AIAgent has no tools underneath
+                withClue("No tools should be called for model $model") {
+                    state.actualToolCalls.shouldBeEmpty()
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentWithoutSystemMessage(model: LLModel) = runTest {
+        Models.assumeAvailable(model.provider)
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val executor = getExecutor(model)
+
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    llmModel = model,
+                    temperature = 1.0,
+                    maxIterations = 10,
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) },
+                )
+                agent.run("Repeat what I say: hello, I'm good.")
+                withClue("No errors were expected during the run, got:\\n[${state.errors.joinToString("\n")}]") {
+                    state.errors.shouldBeEmpty()
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentShouldCallCustomTool(model: LLModel) = runTest {
+        Models.assumeAvailable(model.provider)
+        Models.assumeEnumToolCallsAreStable(model, "custom calculator tool integration")
+        assumeTrue(model.supports(LLMCapability.Tools), "Model $model does not support tools")
+
+        val toolRegistry = ToolRegistry {
+            tool(SimpleCalculatorTool)
+        }
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val executor = getExecutor(model)
+
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    systemPrompt = systemPrompt + "JUST CALL THE TOOLS, NO QUESTIONS ASKED!",
+                    strategy = singleRunStrategy(parallelTools = false),
+                    llmModel = model,
+                    temperature = 1.0,
+                    toolRegistry = toolRegistry,
+                    maxIterations = 10,
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) },
+                )
+
+                agent.run("How much is 3 times 5?")
+                with(state) {
+                    withClue("No tools were called for model $model") { actualToolCalls.shouldNotBeEmpty() }
+                    withClue("The ${SimpleCalculatorTool.name} tool was not called for model $model") {
+                        actualToolCalls shouldContain SimpleCalculatorTool.name
+                    }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("modelsWithVisionCapability")
+    fun integration_AIAgentWithImageCapabilityTest(model: LLModel) = runTest(timeout = 300.seconds) {
+        Models.assumeAvailable(model.provider)
+        assumeTrue(model.supports(LLMCapability.Vision.Image), "Model must support vision capability")
+
+        val imageFile = testResourcesDir.resolve("test.png")
+
+        val imageBytes = imageFile.readBytes()
+        val base64Image = Base64.getEncoder().encodeToString(imageBytes)
+
+        val promptWithImage = """
+            I'm sending you an image encoded in base64 format.
+
+            data:image/png,$base64Image
+
+            Please analyze this image and identify the image format if possible.
+        """.trimIndent()
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val executor = getExecutor(model)
+
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    systemPrompt = "You are a helpful assistant that can analyze images.",
+                    llmModel = model,
+                    temperature = 1.0,
+                    maxIterations = 10,
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) },
+                )
+
+                agent.run(promptWithImage)
+
+                with(state) {
+                    errors.shouldBeEmpty()
+                    results.shouldNotBeEmpty()
+                    results.first() as String shouldNotBeNull {
+                        shouldNotBeBlank()
+                        length shouldBeGreaterThan 20
+                        lowercase()
+                            .shouldNotContain("error processing")
+                            .shouldNotContain("unable to process")
+                            .shouldNotContain("cannot process")
+                    }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_RequestLLMWithoutTools(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+        assumeTrue(model.supports(LLMCapability.Tools), "Model $model does not support tools")
+
+        val executor = getExecutor(model)
+
+        val toolRegistry = ToolRegistry {
+            tool(SimpleCalculatorTool)
+        }
+
+        val customStrategy = strategy("test-without-tools") {
+            val callLLM by nodeLLMRequestWithoutTools(name = "callLLM")
+            edge(nodeStart forwardTo callLLM)
+            edge(callLLM forwardTo nodeFinish onTextMessage { true })
+        }
+
+        withRetry(times = 3, testName = "integration_testRequestLLMWithoutTools[${model.id}]") {
+            runWithTracking { eventHandlerConfig, state ->
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    strategy = customStrategy,
+                    agentConfig = AIAgentConfig(
+                        prompt("test-without-tools") {},
+                        model,
+                        maxAgentIterations = 10,
+                    ),
+                    toolRegistry = toolRegistry,
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) },
+                )
+
+                agent.run("What is 123 + 456?") shouldNotBeNull {
+                    shouldNotBeBlank()
+                    shouldContain("579")
+                }
+
+                state.actualToolCalls.shouldBeEmpty()
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentSingleRunWithSequentialToolsTest(model: LLModel) = runTest(timeout = 300.seconds) {
+        runMultipleToolsTest(model, parallelTools = false)
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentSingleRunWithParallelToolsTest(model: LLModel) = runTest(timeout = 300.seconds) {
+        assumeTrue(
+            model !in listOf(
+                OpenAIModels.Chat.O1,
+            ),
+            "The model fails to call tools in parallel or flaky, see KG-115"
+        )
+
+        runMultipleToolsTest(model, parallelTools = true)
+    }
+
+    @ParameterizedTest
+    @MethodSource("reasoningIntervals")
+    fun integration_AIAgentWithReActStrategyTest(interval: Int) = runTest(timeout = 300.seconds) {
+        val model = OpenAIModels.Chat.GPT4o
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val executor = getExecutor(model)
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    strategy = reActStrategy(reasoningInterval = interval),
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt(
+                            id = "react-agent-test",
+                            params = LLMParams(
+                                temperature = 1.0,
+                                toolChoice = ToolChoice.Auto,
+                            )
+                        ) {},
+                        model = model,
+                        maxAgentIterations = 20,
+                    ),
+                    toolRegistry = bankingToolsRegistry,
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) },
+                )
+
+                agent.run("How much did I spend last month?")
+
+                with(state) {
+                    errors.shouldBeEmpty()
+                    results.shouldNotBeEmpty()
+                    withClue("The ${GetTransactionsTool.descriptor.name} tool should be called") {
+                        actualToolCalls shouldContain GetTransactionsTool.descriptor.name
+                    }
+                    withClue("The ${CalculateSumTool.descriptor.name} tool should be called") {
+                        actualToolCalls shouldContain CalculateSumTool.descriptor.name
+                    }
+                    withClue("The ${GetTransactionsTool.descriptor.name} tool should be called before the ${CalculateSumTool.descriptor.name} tool") {
+                        actualToolCalls.indexOf(GetTransactionsTool.descriptor.name) shouldBeLessThan actualToolCalls.indexOf(
+                            CalculateSumTool.descriptor.name
+                        )
+                    }
+
+                    withClue("Should have at least one reasoning call for the ReAct strategy.") {
+                        reasoningCallsCount shouldBeGreaterThan 0
+                    }
+
+                    // Count how many times the reasoning step would trigger based on the interval
+                    var expectedReasoningCalls = 1 // Start with 1 for the initial reasoning
+                    for (i in toolExecutionCounter.indices) {
+                        if (i % interval == 0) {
+                            expectedReasoningCalls++
+                        }
+                    }
+
+                    withClue(
+                        "With reasoningInterval=$interval and ${toolExecutionCounter.size} tool calls, " +
+                            "expected $expectedReasoningCalls reasoning calls but got $reasoningCallsCount"
+                    ) {
+                        reasoningCallsCount shouldBe expectedReasoningCalls
+                    }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentCreateAndRestoreFromCheckpoint(model: LLModel) = runTest(timeout = 180.seconds) {
+        // assumeTrue(model == GoogleModels.Gemini2_5Flash)
+
+        val checkpointStorageProvider = InMemoryPersistenceStorageProvider()
+        val sayHello = "Hello World!"
+        val hello = "Hello"
+        val savedMessage = "Saved the state – the agent is ready to work!"
+        val save = "Save"
+        val sayBye = "Bye Bye World!"
+        val bye = "Bye"
+
+        val checkpointStrategy = strategy<String, String>("checkpoint-strategy") {
+            val nodeHello by node<String, String>(name = hello) {
+                sayHello
+            }
+
+            val nodeSave by node<String, String>(name = save) { input ->
+                // Create a checkpoint
+                withPersistence { agentContext ->
+                    val parent = getLatestCheckpoint(agentContext.agentId)
+                    createCheckpointAfterNode(
+                        agentContext = agentContext,
+                        nodePath = agentContext.executionInfo.path(),
+                        lastOutput = input,
+                        lastOutputType = typeToken<String>(),
+                        version = parent?.version?.plus(1) ?: 0
+                    )
+                }
+                savedMessage
+            }
+
+            val nodeBye by node<String, String>(name = bye) {
+                sayBye
+            }
+
+            edge(nodeStart forwardTo nodeHello)
+            edge(nodeHello forwardTo nodeSave)
+            edge(nodeSave forwardTo nodeBye)
+            edge(nodeBye forwardTo nodeFinish)
+        }
+
+        val agent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = checkpointStrategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("checkpoint-test") {
+                    system("You are a helpful assistant.")
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry {},
+            installFeatures = {
+                install(Persistence) {
+                    storage = checkpointStorageProvider
+                    enableAutomaticPersistence = false
+                }
+            }
+        )
+
+        agent.run("Start the test", agent.id)
+
+        with(checkpointStorageProvider.getCheckpoints(agent.id)) {
+            shouldNotBeEmpty()
+            first().graphProperties?.nodePath shouldContain save
+        }
+
+        val restoredAgent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = checkpointStrategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("checkpoint-test") {
+                    system("You are a helpful assistant.")
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry {},
+            id = agent.id, // Use the same ID to access the checkpoints
+            installFeatures = {
+                install(Persistence) {
+                    storage = checkpointStorageProvider
+                    enableAutomaticPersistence = false
+                }
+            }
+        )
+
+        // Verify that the agent continued from the checkpoint
+        restoredAgent.run("Continue the test", agent.id) shouldContain sayBye
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentCheckpointRollback(model: LLModel) = runTest(timeout = 180.seconds) {
+        // assumeTrue(model == GoogleModels.Gemini2_5Flash)
+        val checkpointStorageProvider = InMemoryPersistenceStorageProvider()
+
+        val hello = "Hello"
+        val save = "Save"
+        val bye = "Bye-bye"
+        val rollback = "Rollback"
+
+        val sayHello = "Hello World!"
+        val saySave = "Saved the day"
+        val sayBye = "Bye World!"
+
+        val sayHelloLog = "sayHello executed\n"
+        val saySaveLog = "saySave executed\n"
+        val sayByeLog = "sayBye executed\n"
+        val rollbackPerformingLog = "Rollback executed - performing rollback\n"
+        val rollbackAlreadyLog = "Rollback executed - already rolled back\n"
+
+        val rolledBackMessage = "Rolled back to the latest checkpoint"
+        val alreadyRolledBackMessage = "Already rolled back, continuing to finish"
+
+        var hasRolledBack = false
+
+        // Shared result string to track node executions across rollbacks
+        val executionLog = StringBuilder()
+
+        val rollbackStrategy = strategy<String, String>("rollback-strategy") {
+            val nodeHello by node<String, String>(name = hello) {
+                executionLog.append(sayHelloLog)
+                sayHello
+            }
+
+            val nodeSave by node<String, String>(name = save) { input ->
+                withPersistence { agentContext ->
+                    val parent = getLatestCheckpoint(agentContext.agentId)
+                    createCheckpointAfterNode(
+                        agentContext = agentContext,
+                        nodePath = agentContext.executionInfo.path(),
+                        lastOutput = input,
+                        lastOutputType = typeToken<String>(),
+                        version = parent?.version?.plus(1) ?: 0
+                    )
+                }
+                executionLog.append(saySaveLog)
+                saySave
+            }
+
+            val nodeBye by node<String, String>(name = bye) {
+                executionLog.append(sayByeLog)
+                sayBye
+            }
+
+            val rollbackNode by node<String, String>(name = rollback) {
+                // Use a shared variable to prevent infinite rollbacks
+                // Only roll back once, then continue
+                if (!hasRolledBack) {
+                    hasRolledBack = true
+                    executionLog.append(rollbackPerformingLog)
+                    withPersistence { agentContext ->
+                        rollbackToLatestCheckpoint(agentContext)
+                    }
+                    rolledBackMessage
+                } else {
+                    executionLog.append(rollbackAlreadyLog)
+                    alreadyRolledBackMessage
+                }
+            }
+
+            edge(nodeStart forwardTo nodeHello)
+            edge(nodeHello forwardTo nodeSave)
+            edge(nodeSave forwardTo nodeBye)
+            edge(nodeBye forwardTo rollbackNode)
+            edge(rollbackNode forwardTo nodeFinish)
+        }
+
+        val agent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = rollbackStrategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("rollback-test") {
+                    system("You are a helpful assistant.")
+                },
+                model = model,
+                maxAgentIterations = 50
+            ),
+            toolRegistry = ToolRegistry {},
+            installFeatures = {
+                install(Persistence) {
+                    storage = checkpointStorageProvider
+                    enableAutomaticPersistence = false
+                }
+            }
+        )
+
+        withClue("Final result should contain output from the second execution of $rollback") {
+            agent.run("Start the test", agent.id) shouldContain alreadyRolledBackMessage
+        }
+
+        with(executionLog.toString()) {
+            shouldNotBeEmpty()
+            shouldContain(sayHelloLog.trim())
+            shouldContain(saySaveLog.trim())
+            shouldContain(sayByeLog.trim())
+            shouldContain(rollbackPerformingLog.trim())
+            // After #1308: checkpoint restoration doesn't re-execute the checkpointed node
+            // nodeHello and nodeSave are executed once (no re-execution after rollback)
+            sayHelloLog.trim().toRegex().findAll(this).count() shouldBe 1
+            saySaveLog.trim().toRegex().findAll(this).count() shouldBe 1
+            // one rollback should be performed and tracked
+            rollbackPerformingLog.trim().toRegex().findAll(this).count() shouldBe 1
+            // nodeBye is executed twice (once before rollback, once after rollback)
+            sayByeLog.trim().toRegex().findAll(this).count() shouldBe 2
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentCheckpointContinuousPersistence(model: LLModel) = runTest(timeout = 180.seconds) {
+        val checkpointStorageProvider =
+            InMemoryPersistenceStorageProvider()
+
+        val strategyName = "continuous-persistence-strategy"
+
+        val hello = "Hello"
+        val world = "Save"
+        val bye = "Bye-bye"
+
+        val sayHello = "Hello World!"
+        val sayWorld = "World, hello!"
+        val sayBye = "Bye World!"
+
+        val promptName = "continuous-persistence-test"
+        val systemMessage = "You are a helpful assistant."
+        val testInput = "Start the test"
+
+        val simpleStrategy = strategy<String, String>(strategyName) {
+            val nodeHello by node<String, String>(name = hello) {
+                sayHello
+            }
+
+            val nodeWorld by node<String, String>(name = world) {
+                sayWorld
+            }
+
+            val nodeBye by node<String, String>(name = bye) {
+                sayBye
+            }
+
+            edge(nodeStart forwardTo nodeHello)
+            edge(nodeHello forwardTo nodeWorld)
+            edge(nodeWorld forwardTo nodeBye)
+            edge(nodeBye forwardTo nodeFinish)
+        }
+
+        val agent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = simpleStrategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt(promptName) {
+                    system(systemMessage)
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry {},
+            installFeatures = {
+                install(Persistence) {
+                    storage = checkpointStorageProvider
+                }
+            }
+        )
+        agent.run(testInput, agent.id)
+
+        with(checkpointStorageProvider.getCheckpoints(agent.id).filter { !it.isTombstone() }) {
+            size shouldBeGreaterThanOrEqual 3
+            shouldForAll {
+                it.llmModel shouldBe model
+                it.llmParams.shouldNotBeNull()
+                it.tools shouldBe emptyList()
+                it.storage.shouldNotBeNull()
+                it.agentIterations shouldBeGreaterThan 0
+            }
+            mapNotNull { it.graphProperties?.nodePath }.toSet() shouldNotBeNull {
+                shouldForAny { it.shouldContain(hello) }
+                shouldForAny { it.shouldContain(world) }
+                shouldForAny { it.shouldContain(bye) }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentSessionStorageDoesNotLeakBetweenRuns(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+
+        val greetingKey = createStorageKey<String>("integration-session-greeting")
+        val counterKey = createStorageKey<Int>("integration-session-counter")
+
+        val storageStrategy = strategy<String, String>("integration-session-storage-strategy") {
+            val readNode by node<String, String>("readStorage") {
+                val greeting = storage.get(greetingKey)
+                val counter = storage.get(counterKey)
+                "greeting=$greeting, counter=$counter"
+            }
+
+            edge(nodeStart forwardTo readNode)
+            edge(readNode forwardTo nodeFinish)
+        }
+
+        val agent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = storageStrategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("integration-session-storage-test") {
+                    system("You are a helpful assistant.")
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry {},
+        )
+
+        val initialStorage = AIAgentStorage(KotlinxSerializer()).apply {
+            set(greetingKey, "hello-from-session-inputs")
+            set(counterKey, 7)
+        }
+
+        val session = agent.createSession("integration-session-storage")
+        val firstResult = session.run(
+            input = "ignored",
+            sessionInputs = AdditionalInputs.Storage(initialStorage),
+        )
+        val secondResult = session.run("ignored")
+
+        firstResult shouldBe "greeting=hello-from-session-inputs, counter=7"
+        secondResult shouldBe "greeting=null, counter=null"
+        initialStorage.get(greetingKey) shouldBe "hello-from-session-inputs"
+        initialStorage.get(counterKey) shouldBe 7
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentRunFromCheckpointRestoresFromLastInput(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+
+        val sessionId = "integration-last-input-checkpoint"
+        val strategyName = "integration-last-input-strategy"
+        val node1Name = "Node1"
+        val node2Name = "Node2"
+        val finalName = "Final"
+
+        val strategy = strategy<String, String>(strategyName) {
+            val node1 by node<String, String>(node1Name) { "Node 1 output" }
+            val node2 by node<String, String>(node2Name) { input -> "$input -> Node 2 output" }
+            val finalNode by node<String, String>(finalName) { input -> "Final: $input" }
+
+            edge(nodeStart forwardTo node1)
+            edge(node1 forwardTo node2)
+            edge(node2 forwardTo finalNode)
+            edge(finalNode forwardTo nodeFinish)
+        }
+
+        val checkpoint = AgentCheckpointData(
+            checkpointId = "last-input-checkpoint",
+            createdAt = KoogClock.System.now(),
+            messageHistory = listOf(
+                Message.User("Restored user message", metaInfo = RequestMetaInfo(KoogClock.System.now())),
+                Message.Assistant("Restored assistant message", metaInfo = ResponseMetaInfo(KoogClock.System.now()))
+            ),
+            version = 0,
+            graphProperties = GraphCheckpointProperties(
+                nodePath = path(sessionId, strategyName, node1Name),
+                lastOutput = JSONPrimitive("Node 1 output"),
+            ),
+        )
+
+        val agent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = strategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("integration-last-input-checkpoint-test") {
+                    system("You are a helpful assistant.")
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry {},
+        )
+
+        val result = Persistence.runFromCheckpoint(
+            agent = agent,
+            input = "ignored",
+            checkpoint = checkpoint,
+            sessionId = sessionId,
+        )
+
+        result shouldBe "Final: Node 1 output -> Node 2 output"
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentRunFromCheckpointFailsForUnknownNodePath(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+
+        val sessionId = "integration-invalid-checkpoint"
+        val strategyName = "integration-invalid-checkpoint-strategy"
+
+        val strategy = strategy<String, String>(strategyName) {
+            val validNode by node<String, String>("ValidNode") { "ok" }
+            edge(nodeStart forwardTo validNode)
+            edge(validNode forwardTo nodeFinish)
+        }
+
+        val checkpoint = AgentCheckpointData(
+            checkpointId = "invalid-checkpoint",
+            createdAt = KoogClock.System.now(),
+            messageHistory = emptyList(),
+            version = 0,
+            graphProperties = GraphCheckpointProperties(
+                nodePath = path(sessionId, strategyName, "MissingNode"),
+                lastOutput = JSONPrimitive("missing")
+            )
+        )
+
+        val agent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = strategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt("integration-invalid-checkpoint-test") {
+                    system("You are a helpful assistant.")
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry {},
+        )
+
+        val error = assertFailsWith<IllegalStateException> {
+            Persistence.runFromCheckpoint(
+                agent = agent,
+                input = "ignored",
+                checkpoint = checkpoint,
+                sessionId = sessionId,
+            )
+        }
+
+        error.message shouldContain "MissingNode"
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentCheckpointStorageProviders(
+        model: LLModel,
+        @TempDir tempDir: Path,
+    ) = runTest(timeout = 180.seconds) {
+        val agentId = "storage-providers-test-agent"
+        val strategyName = "storage-providers-strategy"
+
+        val hello = "Hello"
+        val bye = "Bye-bye"
+
+        val sayHello = "Hello World!"
+        val sayBye = "Bye World!"
+
+        val promptName = "storage-providers-test"
+        val systemMessage = "You are a helpful assistant."
+        val testInput = "Start the test"
+
+        val incorrectNodeIdError = "Checkpoint has incorrect node ID"
+
+        val fileStorageProvider = JVMFilePersistenceStorageProvider(tempDir)
+
+        val simpleStrategy = strategy<String, String>(strategyName) {
+            val nodeHello by node<String, String>(hello) {
+                sayHello
+            }
+
+            val nodeBye by node<String, String>(bye) { input ->
+                withPersistence { agentContext ->
+                    val parent = getLatestCheckpoint(agentContext.agentId)
+                    createCheckpointAfterNode(
+                        agentContext = agentContext,
+                        nodePath = agentContext.executionInfo.path(),
+                        lastOutput = input,
+                        lastOutputType = typeToken<String>(),
+                        version = parent?.version?.plus(1) ?: 0
+                    )
+                }
+                sayBye
+            }
+
+            edge(nodeStart forwardTo nodeHello)
+            edge(nodeHello forwardTo nodeBye)
+            edge(nodeBye forwardTo nodeFinish)
+        }
+
+        val agent = AIAgent(
+            id = agentId,
+            promptExecutor = getExecutor(model),
+            strategy = simpleStrategy,
+            agentConfig = AIAgentConfig(
+                prompt = prompt(promptName) {
+                    system(systemMessage)
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry {},
+            installFeatures = {
+                install(Persistence) {
+                    storage = fileStorageProvider
+                    enableAutomaticPersistence = false
+                }
+            }
+        )
+        agent.run(testInput, agent.id)
+
+        val expectedNodePath = path(agentId, strategyName, bye)
+        with(fileStorageProvider.getCheckpoints(agent.id).filter { !it.isTombstone() }) {
+            withClue(incorrectNodeIdError) {
+                shouldNotBeEmpty()
+                first().graphProperties?.nodePath shouldBe expectedNodePath
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    @Disabled("KG-499 Infinite loop on an attempt to serialize input for checkpoint creation for nodeSendToolResult")
+    fun integration_AIAgentCheckpointWithToolCalls(model: LLModel) = runTest(timeout = 180.seconds) {
+        assumeTrue(model.supports(LLMCapability.Tools), "Model $model does not support tools")
+
+        val storageProvider = InMemoryPersistenceStorageProvider()
+        val registry = ToolRegistry {
+            tool(SimpleCalculatorTool)
+        }
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val executor = getExecutor(model)
+
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    strategy = singleRunStrategy(parallelTools = false),
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt(
+                            id = "calculator-agent-persistence-test",
+                            params = LLMParams(
+                                temperature = 1.0,
+                                toolChoice = ToolChoice.Required,
+                            )
+                        ) {
+                            system {
+                                +systemPrompt
+                                +"Always use the calculator tool once to answer math questions."
+                                +"JUST CALL THE TOOL, NO QUESTIONS ASKED."
+                            }
+                        },
+                        model = model,
+                        maxAgentIterations = 20
+                    ),
+                    toolRegistry = registry,
+                    installFeatures = {
+                        install(EventHandler.Feature, eventHandlerConfig)
+                        install(Persistence) {
+                            storage = storageProvider
+                        }
+                    },
+                )
+
+                agent.run("What is 12 + 34?", agent.id)
+
+                with(state) {
+                    actualToolCalls shouldBe listOf(SimpleCalculatorTool.descriptor.name)
+                    withClue("${SimpleCalculatorTool.descriptor.name} tool should be called for model $model with persistence") {
+                        errors.shouldBeEmpty()
+                    }
+                }
+
+                withClue("Checkpoint message history should contain a tool call to '${SimpleCalculatorTool.name}'") {
+                    storageProvider.getCheckpoints(agent.id).filter { !it.isTombstone() }
+                        .shouldNotBeEmpty()
+                        .shouldForAny { cp ->
+                            cp.messageHistory.any { msg ->
+                                msg.parts.any { part ->
+                                    part is MessagePart.Tool.Call && part.tool == SimpleCalculatorTool.name
+                                }
+                            }
+                        }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_AIAgentWithToolsWithoutParams(model: LLModel) = runTest(timeout = 180.seconds) {
+        assumeTrue(model.supports(LLMCapability.Tools), "Model $model does not support tools")
+
+        val registry = ToolRegistry {
+            tool(CalculatorToolNoArgs)
+        }
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val executor = getExecutor(model)
+
+                val agent = AIAgent(
+                    promptExecutor = executor,
+                    strategy = singleRunStrategy(parallelTools = false),
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt(
+                            id = "calculator-agent-test",
+                            params = LLMParams(
+                                temperature = 1.0,
+                                toolChoice = ToolChoice.Auto, // KG-163
+                            )
+                        ) {
+                            system {
+                                +systemPrompt
+                                +"YOU'RE OBLIGED TO USE TOOLS. THIS IS MANDATORY."
+                                +"JUST CALL THE TOOL ONE TIME, NO QUESTIONS ASKED."
+                            }
+                        },
+                        model = model,
+                        maxAgentIterations = 10
+                    ),
+                    toolRegistry = registry,
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) },
+                )
+                agent.run("What is 123 + 456?")
+
+                with(state) {
+                    withClue("${CalculatorToolNoArgs.descriptor.name} tool should be called for model $model") {
+                        actualToolCalls.shouldContain(CalculatorToolNoArgs.descriptor.name)
+                    }
+
+                    errors.shouldBeEmpty()
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_ParallelNodesExecutionTest(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+
+        val parallelStrategy = strategy<String, String>("parallel-nodes-strategy") {
+            // Create three nodes that process different computations
+            val mathNode by node<Unit, String>("math") {
+                "Math result: ${7 * 8}"
+            }
+
+            val textNode by node<Unit, String>("text") {
+                "Text result: Hello World"
+            }
+
+            val countNode by node<Unit, String>("count") {
+                "Count result: ${(1..5).sum()}"
+            }
+
+            val parallelNode by parallel(
+                mathNode,
+                textNode,
+                countNode,
+                name = "parallelProcessor"
+            ) {
+                val combinedResult = fold("") { acc, result ->
+                    if (acc.isEmpty()) result else "$acc | $result"
+                }
+                ParallelNodeExecutionResult("Combined: ${combinedResult.output}", combinedResult.context)
+            }
+
+            edge(nodeStart forwardTo parallelNode transformed { })
+            edge(parallelNode forwardTo nodeFinish)
+        }
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val agent = AIAgent(
+                    promptExecutor = getExecutor(model),
+                    strategy = parallelStrategy,
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt("parallel-test") {
+                            system("You are a helpful assistant.")
+                        },
+                        model = model,
+                        maxAgentIterations = 10
+                    ),
+                    toolRegistry = ToolRegistry {},
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) }
+                )
+
+                agent.run("Hi")
+
+                with(state) {
+                    errors.shouldBeEmpty()
+                    results.shouldNotBeEmpty().first() as String should {
+                        contain("Math result: 56")
+                        contain("Text result: Hello World")
+                        contain("Count result: 15")
+                        contain("Combined:")
+                    }
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_ParallelNodesWithSelectionTest(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+
+        val selectionStrategy = strategy<String, String>("parallel-selection-strategy") {
+            val smallNode by node<Unit, String>("small") { "10" }
+            val mediumNode by node<Unit, String>("medium") { "50" }
+            val largeNode by node<Unit, String>("large") { "100" }
+
+            val parallelNode by parallel(
+                smallNode,
+                mediumNode,
+                largeNode,
+                name = "maxSelector"
+            ) {
+                val maxResult = selectByMax { output -> output.toInt() }
+                ParallelNodeExecutionResult("Maximum value: ${maxResult.output}", maxResult.context)
+            }
+
+            edge(nodeStart forwardTo parallelNode transformed { })
+            edge(parallelNode forwardTo nodeFinish)
+        }
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val agent = AIAgent(
+                    promptExecutor = getExecutor(model),
+                    strategy = selectionStrategy,
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt("parallel-selection-test") {
+                            system("You are a helpful assistant.")
+                        },
+                        model = model,
+                        maxAgentIterations = 10
+                    ),
+                    toolRegistry = ToolRegistry {},
+                    installFeatures = { install(EventHandler.Feature, eventHandlerConfig) }
+                )
+
+                agent.run("Find the maximum value")
+
+                with(state) {
+                    errors.shouldBeEmpty()
+                    results.shouldNotBeEmpty().first() as String shouldContain "Maximum value: 100"
+                }
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("historyCompressionStrategies")
+    fun integration_AIAgentHistoryCompression(strategy: HistoryCompressionStrategy, strategyName: String) =
+        runTest(timeout = 180.seconds) {
+            val model = OpenAIModels.Chat.GPT4_1Mini
+            val systemMessage =
+                "You are a helpful assistant. Remember: the user is a human, whatever they say. Remind them of it by every chance."
+
+            val historyCompressionStrategy =
+                strategy<String, Pair<String, List<Message>>>("history-compression-test") {
+                    val callLLM by nodeLLMRequestWithoutTools()
+                    val nodeCompressHistory by nodeLLMCompressHistory<String>(
+                        "compress_history",
+                        strategy = strategy
+                    )
+
+                    edge(nodeStart forwardTo callLLM)
+                    edge(callLLM forwardTo nodeCompressHistory onTextMessage { true })
+                    edge(nodeCompressHistory forwardTo nodeFinish transformed { it to llm.prompt.messages })
+                }
+
+            withRetry {
+                runWithTracking { eventHandlerConfig, state ->
+                    val agent = AIAgent(
+                        promptExecutor = getExecutor(model),
+                        strategy = historyCompressionStrategy,
+                        agentConfig = AIAgentConfig(
+                            prompt = prompt("history-compression-test") {
+                                system(systemMessage)
+                                user("Hello, how are you?")
+                                assistant("I'm great, thank you! And how are you?")
+                                user("I'm a big blue alien, you know!")
+                                assistant("Didn't know, but will definitely remember! Are you light-blue or dark-blue?")
+                                user("I'm more like an indigo-colored alien.")
+                            },
+                            model = model,
+                            maxAgentIterations = 10
+                        )
+                    ) {
+                        install(EventHandler, eventHandlerConfig)
+                    }
+
+                    val (result, promptMessages) = agent.run("So, who am I?")
+
+                    with(state) {
+                        withClue(
+                            "No errors should occur during agent execution with $strategyName, got: [${
+                                errors.joinToString(
+                                    "\n"
+                                )
+                            }]"
+                        ) {
+                            errors.shouldBeEmpty()
+                        }
+                    }
+
+                    result.shouldNotBeBlank() shouldContain "human"
+                    promptMessages shouldNotBeNull {
+                        filterIsInstance<Message.System>().shouldNotBeEmpty()
+                        (first().parts[0] as MessagePart.Text).text.shouldNotBeBlank() shouldBe systemMessage
+                    }
+                }
+            }
+        }
+
+    @ParameterizedTest
+    @MethodSource("historyCompressionStrategies")
+    fun integration_AIAgentHistoryCompressionAfterToolCalls(
+        strategy: HistoryCompressionStrategy,
+        strategyName: String
+    ) = runTest(timeout = 10.minutes) {
+        val model = OpenAIModels.Chat.GPT5_1
+        val systemMessage = "You are a helpful assistant. JUST CALL THE TOOLS, NO QUESTIONS ASKED."
+
+        val historyCompressionStrategy = buildHistoryCompressionWithToolsStrategy(
+            strategy = strategy,
+            compressBeforeToolResult = false,
+        )
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val agent = AIAgent(
+                    promptExecutor = getExecutor(model),
+                    strategy = historyCompressionStrategy,
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt(
+                            "history-compression-with-tools-test",
+                            params = LLMParams(toolChoice = ToolChoice.Auto)
+                        ) {
+                            system(systemMessage)
+                            user(
+                                "Please calculate 7 times 2 using the calculator tool. " +
+                                    "Reply concisely after executing the tool."
+                            )
+                        },
+                        model = model,
+                        maxAgentIterations = 10
+                    ),
+                    toolRegistry = twoToolsRegistry,
+                ) {
+                    install(EventHandler, eventHandlerConfig)
+                }
+
+                val (result, promptMessages) = agent.run("Proceed with the task.")
+
+                assertHistoryCompressionWithTools(
+                    errors = state.errors,
+                    actualToolCalls = state.actualToolCalls,
+                    result = result,
+                    promptMessages = promptMessages,
+                    strategyName = strategyName
+                )
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("historyCompressionStrategies")
+    fun integration_AIAgentHistoryCompressionBeforeToolResult(
+        strategy: HistoryCompressionStrategy,
+        strategyName: String
+    ) = runTest(timeout = 10.minutes) {
+        val model = OpenAIModels.Chat.GPT5_2
+        val systemMessage = "You are a helpful assistant. JUST CALL THE TOOLS, NO QUESTIONS ASKED."
+
+        val historyCompressionStrategy = buildHistoryCompressionWithToolsStrategy(
+            strategy = strategy,
+            compressBeforeToolResult = true,
+        )
+
+        withRetry {
+            runWithTracking { eventHandlerConfig, state ->
+                val agent = AIAgent(
+                    promptExecutor = getExecutor(model),
+                    strategy = historyCompressionStrategy,
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt(
+                            "history-compression-with-tools-test",
+                            params = LLMParams(toolChoice = ToolChoice.Auto)
+                        ) {
+                            system(systemMessage)
+                            user(
+                                "Please calculate 7 times 2 using the calculator tool. " +
+                                    "Reply concisely after executing the tool."
+                            )
+                        },
+                        model = model,
+                        maxAgentIterations = 10
+                    ),
+                    toolRegistry = twoToolsRegistry,
+                ) {
+                    install(EventHandler, eventHandlerConfig)
+                }
+
+                val (result, promptMessages) = agent.run("Proceed with the task.")
+
+                assertHistoryCompressionWithTools(
+                    errors = state.errors,
+                    actualToolCalls = state.actualToolCalls,
+                    result = result,
+                    promptMessages = promptMessages,
+                    strategyName = strategyName
+                )
+            }
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_FunctionalSubtask(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+        Models.assumeEnumToolCallsAreStable(model, "functional subtask with calculator enum tool arguments")
+
+        val agent = AIAgent(
+            promptExecutor = getExecutor(model),
+            strategy = functionalStrategy<String, String> { input ->
+                val result: String = subtask(
+                    taskDescription = "Judge this: $input",
+                    parallelTools = false
+                )
+                "Subtask completed: $result"
+            },
+            agentConfig = AIAgentConfig(
+                prompt = prompt(
+                    "history-compression-with-tools-test",
+                    params = LLMParams(toolChoice = ToolChoice.Required)
+                ) {
+                    system("You are a coordinator that delegates calculations.")
+                    user(
+                        "Calculate the sum of 10 and 20 using the add tool"
+                    )
+                },
+                model = model,
+                maxAgentIterations = 10
+            ),
+            toolRegistry = ToolRegistry { tool(SimpleCalculatorTool) },
+        )
+
+        val result = agent.run("Perform calculation")
+        result.shouldNotBeNull {
+            shouldContain("Subtask completed: ")
+            shouldContain("30")
+        }
+    }
+
+    @ParameterizedTest
+    @MethodSource("latestModels")
+    fun integration_RequestLLMForceOneToolDoesNotDuplicateMessages(model: LLModel) = runTest(timeout = 180.seconds) {
+        Models.assumeAvailable(model.provider)
+        assumeTrue(model.supports(LLMCapability.Tools), "Model $model does not support tools")
+
+        runWithTracking { eventHandlerConfig, state ->
+            val maxAttempts = if (model.provider.id == LLMProvider.MistralAI.id) 2 else 3
+            var attempts = 0
+
+            withRetry(times = maxAttempts) {
+                attempts++
+                val testTool = SimpleCalculatorTool
+
+                val agent = AIAgent(
+                    promptExecutor = getExecutor(model),
+                    strategy = functionalStrategy<String, String>("force-one-tool-strategy") { input ->
+                        llm.writeSession {
+                            appendPrompt {
+                                user(input)
+                            }
+                            val response = requestLLMForceOneTool(testTool)
+
+                            assertTrue(
+                                response.parts.all { it is MessagePart.Tool.Call || it is MessagePart.Reasoning },
+                                "Forced tool request should return Tool.Call for model $model, but was ${response::class.simpleName}"
+                            )
+
+                            val toolCallMessages =
+                                prompt.messages.flatMap { it.parts.filterIsInstance<MessagePart.Tool.Call>() }
+                                    .filter { it.tool == testTool.name }
+                            toolCallMessages.shouldHaveSize(1)
+                        }
+
+                        "Tool call completed successfully without duplication"
+                    },
+                    agentConfig = AIAgentConfig(
+                        prompt = prompt("force-one-tool-test", params = forceOneToolNoReasoningParams(model)) {
+                            system("You are a helpful assistant that can use tools.")
+                        },
+                        model = model,
+                        maxAgentIterations = 10
+                    ),
+                    toolRegistry = ToolRegistry {
+                        tool(testTool)
+                    },
+                    installFeatures = {
+                        install(EventHandler.Feature, eventHandlerConfig)
+                    }
+                )
+
+                agent.run("Calculate 5 times 3") should contain("successfully")
+                state.errors.shouldBeEmpty()
+            }
+        }
+    }
+
+    @Test
+    fun integration_ThrowError() = runTest(timeout = 15.seconds) {
+        val model = OpenAIModels.Chat.GPT5_1
+
+        val agent = AIAgent.builder()
+            .promptExecutor(getExecutor(model))
+            .llmModel(model)
+            .functionalStrategy<String, String> { _, _ ->
+                throw RuntimeException("Intentional error from functional strategy")
+            }
+            .build()
+
+        val exception = try {
+            agent.run("Test")
+            null
+        } catch (e: Exception) {
+            e
+        }
+
+        exception.shouldNotBeNull()
+        exception.message shouldBe "Intentional error from functional strategy"
+    }
+}

@@ -1,0 +1,63 @@
+package ai.koog.agents.example.chess
+
+import ai.koog.agents.core.agent.AIAgent
+import ai.koog.agents.core.dsl.builder.strategy
+import ai.koog.agents.core.dsl.extension.nodeLLMRequest
+import ai.koog.agents.core.dsl.extension.onToolCalls
+import ai.koog.agents.core.dsl.extension.ReceivedToolResults
+import ai.koog.agents.core.dsl.extension.nodeExecuteTools
+import ai.koog.agents.core.dsl.extension.nodeLLMSendToolResults
+import ai.koog.agents.core.dsl.extension.onTextMessage
+import ai.koog.agents.core.tools.ToolRegistry
+import ai.koog.agents.example.ApiKeyService
+import ai.koog.prompt.executor.clients.openai.OpenAIModels
+import ai.koog.prompt.executor.llms.all.simpleOpenAIExecutor
+
+suspend fun main() {
+    val game = ChessGame()
+
+    val toolRegistry = ToolRegistry {
+        tools(listOf(Move(game)))
+    }
+
+    val strategy = strategy<String, String>("chess_strategy") {
+        val nodeCallLLM by nodeLLMRequest("sendInput")
+        val nodeExecuteTool by nodeExecuteTools("nodeExecuteTool")
+        val nodeSendToolResult by nodeLLMSendToolResults("nodeSendToolResult")
+        val nodeTrimHistory by nodeTrimHistory<ReceivedToolResults>()
+
+        edge(nodeStart forwardTo nodeCallLLM)
+        edge(nodeCallLLM forwardTo nodeExecuteTool onToolCalls { true })
+        edge(nodeCallLLM forwardTo nodeFinish onTextMessage { true })
+        edge(nodeExecuteTool forwardTo nodeTrimHistory)
+        edge(nodeTrimHistory forwardTo nodeSendToolResult)
+        edge(nodeSendToolResult forwardTo nodeFinish onTextMessage { true })
+        edge(nodeSendToolResult forwardTo nodeExecuteTool onToolCalls { true })
+    }
+
+    simpleOpenAIExecutor(ApiKeyService.openAIApiKey).use { executor ->
+        // Create a chat agent with a system prompt and the tool registry
+        val agent = AIAgent(
+            promptExecutor = executor,
+            strategy = strategy,
+            llmModel = OpenAIModels.Chat.O3Mini,
+            systemPrompt = """
+                You are an agent who plays chess.
+                You should always propose a move in response to the "Your move!" message.
+
+                DO NOT HALLUCINATE!!!
+                DO NOT PLAY ILLEGAL MOVES!!!
+                YOU CAN SEND A MESSAGE ONLY IF IT IS A RESIGNATION OR A CHECKMATE!!!
+            """.trimMargin(),
+            temperature = 0.0,
+            toolRegistry = toolRegistry,
+            maxIterations = 200,
+        )
+
+        println("Chess Game started!")
+
+        val initialMessage = "Starting position is ${game.getBoard()}. White to move!"
+
+        agent.run(initialMessage)
+    }
+}
