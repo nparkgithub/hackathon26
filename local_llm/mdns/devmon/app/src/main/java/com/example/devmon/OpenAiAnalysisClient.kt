@@ -42,7 +42,12 @@ object OpenAiAnalysisClient {
         val llmModel = LLModel(
             provider = LLMProvider.OpenAI,
             id = model.name,
-            capabilities = listOf(LLMCapability.Vision.Image),
+            capabilities = listOf(
+                LLMCapability.OpenAIEndpoint.Completions,
+                LLMCapability.Completion,
+                LLMCapability.Temperature,
+                LLMCapability.Vision.Image,
+            ),
             contextLength = model.contextLength.coerceAtLeast(1).toLong(),
             maxOutputTokens = null,
         )
