@@ -38,7 +38,7 @@ from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, ServiceListener, Ze
 
 SERVICE_TYPE = "_devmon._tcp.local."
 DEFAULT_INTERVAL = 2.0
-OLLAMA_PORT_DEFAULT = 11434
+OPENAI_PORT_DEFAULT = 8000
 
 # Must match AdvertiserService.FIXED_PORT on the Android side. Used by --scan to
 # find the advertiser by TCP-probing the subnet when mDNS multicast can't get
@@ -177,19 +177,19 @@ def interface_snapshot() -> list[dict]:
     return out
 
 
-def ollama_endpoint(local_ip: str | None, ollama_port: int) -> str | None:
-    """The LAN Ollama URL reported to the Android peer.
+def openai_endpoint(local_ip: str | None, openai_port: int) -> str | None:
+    """The LAN OpenAI-compatible base URL reported to the Android peer.
 
-    A phone must never treat localhost as the desktop's Ollama server.  Only
+    A phone must never treat localhost as the desktop's LLM server. Only
     report a concrete, non-loopback address that the desktop selected for the
     route to that phone.
     """
     if not local_ip or is_loopback(local_ip):
         return None
-    return f"http://{local_ip}:{ollama_port}"
+    return f"http://{local_ip}:{openai_port}"
 
 
-def telemetry(peer_ip: str | None, peer_port: int, ollama_port: int = OLLAMA_PORT_DEFAULT) -> dict:
+def telemetry(peer_ip: str | None, peer_port: int, openai_port: int = OPENAI_PORT_DEFAULT) -> dict:
     """One snapshot. cpu_percent uses interval=None: it reports the average since
     the previous call, so the reporting loop's own period becomes the window."""
     local_ip = outbound_ip(peer_ip, peer_port) if peer_ip else None
@@ -211,9 +211,9 @@ def telemetry(peer_ip: str | None, peer_port: int, ollama_port: int = OLLAMA_POR
         "ip": local_ip,
         "interface": iface_for_ip(local_ip),
         "ip_via_tunnel": tunneled,
-        # This is the only LLM endpoint the Android app may use.  It is
+        # This is the only LLM endpoint the Android app may use. It is
         # intentionally absent for a loopback/tunnel-only route.
-        "ollama_endpoint": ollama_endpoint(local_ip, ollama_port),
+        "openai_endpoint": openai_endpoint(local_ip, openai_port),
         "cpu_percent": psutil.cpu_percent(interval=None),
         "cpu_count": psutil.cpu_count(logical=True),
         "per_cpu_percent": psutil.cpu_percent(interval=None, percpu=True),
@@ -278,11 +278,11 @@ class Reporter(threading.Thread):
     """Holds a TCP connection to one Android device and pushes telemetry."""
 
     def __init__(self, key: str, host: str, port: int, interval: float, verbose: bool,
-                 ollama_port: int = OLLAMA_PORT_DEFAULT):
+                 openai_port: int = OPENAI_PORT_DEFAULT):
         super().__init__(daemon=True, name=f"report:{key}")
         self.key, self.host, self.port = key, host, port
         self.interval, self.verbose = interval, verbose
-        self.ollama_port = ollama_port
+        self.openai_port = openai_port
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -302,7 +302,7 @@ class Reporter(threading.Thread):
 
     def _pump(self, sock: socket.socket) -> None:
         while not self._stop.is_set():
-            payload = telemetry(self.host, self.port, self.ollama_port)
+            payload = telemetry(self.host, self.port, self.openai_port)
             sock.sendall((json.dumps(payload) + "\n").encode())
             if self.verbose:
                 print(json.dumps(payload, indent=2))
@@ -314,9 +314,9 @@ class Reporter(threading.Thread):
 # --------------------------------------------------------------------------- #
 
 class Listener(ServiceListener):
-    def __init__(self, interval: float, verbose: bool, report: bool, ollama_port: int):
+    def __init__(self, interval: float, verbose: bool, report: bool, openai_port: int):
         self.interval, self.verbose, self.report = interval, verbose, report
-        self.ollama_port = ollama_port
+        self.openai_port = openai_port
         self.reporters: dict[str, Reporter] = {}
 
     @staticmethod
@@ -336,7 +336,7 @@ class Listener(ServiceListener):
         }
         print(f"[*] found {name}\n      addr {ip}:{port}  host {info.server}\n      txt  {props}")
         if self.report and ip and name not in self.reporters:
-            r = Reporter(name, ip, port, self.interval, self.verbose, self.ollama_port)
+            r = Reporter(name, ip, port, self.interval, self.verbose, self.openai_port)
             self.reporters[name] = r
             r.start()
 
@@ -432,13 +432,13 @@ def main() -> int:
     p.add_argument("--llm-info", type=Path, default=LLM_INFO_PATH, metavar="PATH",
                    help=f"JSON object describing this host's local LLM "
                         f"(default: {LLM_INFO_PATH.name} beside this script)")
-    p.add_argument("--ollama-port", type=int, default=OLLAMA_PORT_DEFAULT, metavar="PORT",
-                   help=f"LAN port for this host's Ollama server (default {OLLAMA_PORT_DEFAULT})")
+    p.add_argument("--openai-port", type=int, default=OPENAI_PORT_DEFAULT, metavar="PORT",
+                   help=f"LAN port for this host's OpenAI-compatible server (default {OPENAI_PORT_DEFAULT})")
     p.add_argument("--interval", type=float, default=DEFAULT_INTERVAL, help="seconds between samples")
     p.add_argument("-q", "--quiet", action="store_true", help="do not echo each sample")
     args = p.parse_args()
-    if not 1 <= args.ollama_port <= 65535:
-        p.error("--ollama-port must be between 1 and 65535")
+    if not 1 <= args.openai_port <= 65535:
+        p.error("--openai-port must be between 1 and 65535")
 
     psutil.cpu_percent(interval=None)  # prime; first call always reads 0.0
 
@@ -455,7 +455,7 @@ def main() -> int:
         host, _, port = args.connect.rpartition(":")
         if not host or not port.isdigit():
             p.error("--connect expects HOST:PORT")
-        r = Reporter("manual", host, int(port), args.interval, not args.quiet, args.ollama_port)
+        r = Reporter("manual", host, int(port), args.interval, not args.quiet, args.openai_port)
         r.start()
         try:
             while r.is_alive():
@@ -474,7 +474,7 @@ def main() -> int:
             print(f"[*] found candidate at {ip}:{args.scan_port}")
         if args.list:
             return 0
-        reporters = [Reporter(ip, ip, args.scan_port, args.interval, not args.quiet, args.ollama_port)
+        reporters = [Reporter(ip, ip, args.scan_port, args.interval, not args.quiet, args.openai_port)
                      for ip in peers]
         for r in reporters:
             r.start()
@@ -486,7 +486,7 @@ def main() -> int:
                 r.stop()
         return 0
 
-    listener = Listener(args.interval, not args.quiet, report=not args.list, ollama_port=args.ollama_port)
+    listener = Listener(args.interval, not args.quiet, report=not args.list, openai_port=args.openai_port)
     zc = Zeroconf(ip_version=IPVersion.V4Only)
     ServiceBrowser(zc, SERVICE_TYPE, listener)
     print(f"[*] browsing {SERVICE_TYPE} - Ctrl+C to stop")

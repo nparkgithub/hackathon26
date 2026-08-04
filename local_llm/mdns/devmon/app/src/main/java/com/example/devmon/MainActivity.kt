@@ -105,7 +105,7 @@ class MainActivity : AppCompatActivity() {
                     appendLine("${t.host}  ($addr)")
                     appendLine("  OS         ${t.os}")
                     appendLine("  IP         ${t.ip}")
-                    appendLine("  Ollama     ${t.ollamaEndpoint ?: "not reported"}")
+                    appendLine("  OpenAI     ${t.openAiEndpoint ?: "not reported"}")
                     appendLine("  Interface  ${t.iface}")
                     appendLine("  CPU        ${"%.1f".format(t.cpuPercent)}%  (${t.cpuCount} cores)")
                     appendLine("  Memory     ${"%.1f".format(t.memPercent)}%")
@@ -137,12 +137,12 @@ class MainActivity : AppCompatActivity() {
         }
         // Both endpoint and model originate in one received reporter frame.
         val target = advertiser.peers.value.values.firstNotNullOfOrNull { telemetry ->
-            val endpoint = telemetry.ollamaEndpoint ?: return@firstNotNullOfOrNull null
+            val endpoint = telemetry.openAiEndpoint ?: return@firstNotNullOfOrNull null
             val model = telemetry.llms.firstOrNull { it.vision } ?: return@firstNotNullOfOrNull null
             endpoint to model
         }
         if (target == null) {
-            ui.txtAnalysis.text = "No peer reported both a non-local Ollama endpoint and a vision model."
+            ui.txtAnalysis.text = "No peer reported both a non-local OpenAI endpoint and a vision model."
             return
         }
 
@@ -151,12 +151,12 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch {
             val outcome = runCatching {
                 withContext(Dispatchers.IO) {
-                    OllamaAnalysisClient.analyze(target.first, target.second, image, selectedImageMimeType)
+                    OpenAiAnalysisClient.analyze(target.first, target.second, image, selectedImageMimeType)
                 }
             }
             ui.txtAnalysis.text = outcome.fold(
                 onSuccess = { "Allergy information (informational only):\n$it" },
-                onFailure = { "Analysis failed: ${it.message ?: it.javaClass.simpleName}" },
+                onFailure = { "Analysis failed: ${it.describeCauseChain()}" },
             )
             ui.btnAnalyze.isEnabled = selectedImage != null
         }
@@ -189,4 +189,9 @@ class MainActivity : AppCompatActivity() {
     private companion object {
         const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
     }
+
+    private fun Throwable.describeCauseChain(): String =
+        generateSequence(this) { it.cause }
+            .take(4)
+            .joinToString(" <- ") { it.message ?: it.javaClass.simpleName }
 }

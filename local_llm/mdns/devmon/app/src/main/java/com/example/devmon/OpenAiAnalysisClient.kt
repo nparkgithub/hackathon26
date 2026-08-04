@@ -1,15 +1,18 @@
 package com.example.devmon
 
+import ai.koog.http.client.ktor.KtorKoogHttpClient
 import ai.koog.prompt.dsl.prompt
-import ai.koog.prompt.executor.ollama.client.OllamaClient
+import ai.koog.prompt.executor.clients.openai.OpenAIClientSettings
+import ai.koog.prompt.executor.clients.openai.OpenAILLMClient
 import ai.koog.prompt.llm.LLMCapability
 import ai.koog.prompt.llm.LLMProvider
 import ai.koog.prompt.llm.LLModel
 import ai.koog.prompt.message.AttachmentContent
-import ai.koog.prompt.message.ContentPart
+import ai.koog.prompt.message.AttachmentSource
 
-/** Executes the image request through Koog against an endpoint supplied by telemetry. */
-object OllamaAnalysisClient {
+/** Calls the reporter-supplied OpenAI-compatible server through Koog. */
+object OpenAiAnalysisClient {
+    private const val LOCAL_COMPATIBILITY_KEY = "not-needed"
     private const val ALLERGY_PROMPT = """
         Find visible allergy-related information in this image, such as ingredient names,
         allergen statements, warnings, and possible allergen sources. Do not diagnose an
@@ -24,29 +27,36 @@ object OllamaAnalysisClient {
         imageBytes: ByteArray,
         mimeType: String,
     ): String {
-        val image = ContentPart.Image(
+        val image = AttachmentSource.Image(
             content = AttachmentContent.Binary.Bytes(imageBytes),
             format = mimeType.substringAfter('/', missingDelimiterValue = "jpeg"),
             mimeType = mimeType,
             fileName = "allergy-image",
         )
         val request = prompt("allergy-image-analysis") {
-            user(ALLERGY_PROMPT.trimIndent(), listOf(image))
+            user {
+                text(ALLERGY_PROMPT.trimIndent())
+                image(image)
+            }
         }
         val llmModel = LLModel(
-            provider = LLMProvider.Ollama,
+            provider = LLMProvider.OpenAI,
             id = model.name,
             capabilities = listOf(LLMCapability.Vision.Image),
             contextLength = model.contextLength.coerceAtLeast(1).toLong(),
             maxOutputTokens = null,
         )
 
-        // The endpoint is validated as reporter-supplied by Telemetry.from().
-        // Never create a default/localhost client here.
-        val client = OllamaClient(baseUrl = endpoint)
+        // Koog appends `v1/chat/completions`; the reporter sends only the base URL.
+        // Local OpenAI-compatible servers commonly ignore this placeholder key.
+        val client = OpenAILLMClient(
+            apiKey = LOCAL_COMPATIBILITY_KEY,
+            settings = OpenAIClientSettings(baseUrl = endpoint),
+            httpClientFactory = KtorKoogHttpClient.Factory(),
+        )
         return try {
-            client.execute(request, llmModel).joinToString("\n") { it.content }
-                .ifBlank { error("Ollama returned an empty response") }
+            client.execute(request, llmModel).textContent()
+                .ifBlank { error("OpenAI-compatible server returned an empty response") }
         } finally {
             client.close()
         }

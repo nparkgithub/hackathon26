@@ -8,8 +8,8 @@ data class Telemetry(
     val host: String,
     val os: String,
     val ip: String,
-    /** LAN Ollama URL reported by discover_and_report.py; null if unavailable/unsafe. */
-    val ollamaEndpoint: String?,
+    /** LAN OpenAI-compatible base URL reported by discover_and_report.py; null if unavailable/unsafe. */
+    val openAiEndpoint: String?,
     val iface: String,
     val cpuPercent: Double,
     val cpuCount: Int,
@@ -59,7 +59,7 @@ data class Telemetry(
                 host = o.optString("host", "?"),
                 os = o.optString("os", "?"),
                 ip = o.optString("ip", "?"),
-                ollamaEndpoint = endpointFrom(o.optString("ollama_endpoint", "")),
+                openAiEndpoint = endpointFrom(o.optString("openai_endpoint", "")),
                 iface = o.optString("interface", "?"),
                 cpuPercent = o.optDouble("cpu_percent", 0.0),
                 cpuCount = o.optInt("cpu_count", 0),
