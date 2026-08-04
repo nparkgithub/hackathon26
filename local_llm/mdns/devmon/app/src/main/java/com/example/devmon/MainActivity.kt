@@ -5,6 +5,7 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.net.Uri
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.Lifecycle
@@ -13,6 +14,8 @@ import androidx.lifecycle.repeatOnLifecycle
 import com.example.devmon.databinding.ActivityMainBinding
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import java.net.Inet4Address
 import java.net.NetworkInterface
 
@@ -20,6 +23,23 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var ui: ActivityMainBinding
     private lateinit var advertiser: AdvertiserService
+    private var selectedImage: ByteArray? = null
+    private var selectedImageMimeType: String = "image/jpeg"
+
+    private val pickImage = registerForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null) return@registerForActivityResult
+        val bytes = runCatching { contentResolver.openInputStream(uri)?.use { it.readBytes() } }.getOrNull()
+        if (bytes == null || bytes.isEmpty()) {
+            ui.txtAnalysis.text = "Could not read the selected image."
+        } else if (bytes.size > MAX_IMAGE_BYTES) {
+            ui.txtAnalysis.text = "Image is too large (max 8 MiB). Choose a smaller image."
+        } else {
+            selectedImage = bytes
+            selectedImageMimeType = contentResolver.getType(uri) ?: "image/jpeg"
+            ui.txtSelectedImage.text = "Selected image: ${bytes.size / 1024} KiB"
+            ui.btnAnalyze.isEnabled = true
+        }
+    }
 
     private val requestPerms = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -39,6 +59,9 @@ class MainActivity : AppCompatActivity() {
                 ensurePermissionsThenStart()
             }
         }
+        ui.btnPickImage.setOnClickListener { pickImage.launch("image/*") }
+        ui.btnAnalyze.setOnClickListener { analyzeSelectedImage() }
+        ui.btnAnalyze.isEnabled = false
 
         ui.txtSelf.text = describeSelf()
 
@@ -82,6 +105,7 @@ class MainActivity : AppCompatActivity() {
                     appendLine("${t.host}  ($addr)")
                     appendLine("  OS         ${t.os}")
                     appendLine("  IP         ${t.ip}")
+                    appendLine("  Ollama     ${t.ollamaEndpoint ?: "not reported"}")
                     appendLine("  Interface  ${t.iface}")
                     appendLine("  CPU        ${"%.1f".format(t.cpuPercent)}%  (${t.cpuCount} cores)")
                     appendLine("  Memory     ${"%.1f".format(t.memPercent)}%")
@@ -96,7 +120,7 @@ class MainActivity : AppCompatActivity() {
                         appendLine("  Local LLMs (${t.llms.size}):")
                         t.llms.forEach { llm ->
                             appendLine("    - ${llm.name}  ${llm.parameters} params  ${llm.quantization}")
-                            appendLine("      ctx ${llm.contextLength}  family ${llm.family}")
+                            appendLine("      ctx ${llm.contextLength}  family ${llm.family}  vision ${llm.vision}")
                         }
                     }
                 }
@@ -104,6 +128,38 @@ class MainActivity : AppCompatActivity() {
         }
 
         ui.txtLog.text = log.takeLast(15).joinToString("\n")
+    }
+
+    private fun analyzeSelectedImage() {
+        val image = selectedImage ?: run {
+            ui.txtAnalysis.text = "Select an image first."
+            return
+        }
+        // Both endpoint and model originate in one received reporter frame.
+        val target = advertiser.peers.value.values.firstNotNullOfOrNull { telemetry ->
+            val endpoint = telemetry.ollamaEndpoint ?: return@firstNotNullOfOrNull null
+            val model = telemetry.llms.firstOrNull { it.vision } ?: return@firstNotNullOfOrNull null
+            endpoint to model
+        }
+        if (target == null) {
+            ui.txtAnalysis.text = "No peer reported both a non-local Ollama endpoint and a vision model."
+            return
+        }
+
+        ui.btnAnalyze.isEnabled = false
+        ui.txtAnalysis.text = "Analyzing with ${target.second.name} at ${target.first}…"
+        lifecycleScope.launch {
+            val outcome = runCatching {
+                withContext(Dispatchers.IO) {
+                    OllamaAnalysisClient.analyze(target.first, target.second, image, selectedImageMimeType)
+                }
+            }
+            ui.txtAnalysis.text = outcome.fold(
+                onSuccess = { "Allergy information (informational only):\n$it" },
+                onFailure = { "Analysis failed: ${it.message ?: it.javaClass.simpleName}" },
+            )
+            ui.btnAnalyze.isEnabled = selectedImage != null
+        }
     }
 
     /** This device's own WiFi address, so you can sanity-check both ends are on one subnet. */
@@ -128,5 +184,9 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         advertiser.shutdown()
+    }
+
+    private companion object {
+        const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
     }
 }

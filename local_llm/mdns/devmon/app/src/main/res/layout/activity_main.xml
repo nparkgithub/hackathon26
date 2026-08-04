@@ -56,6 +56,40 @@
         <TextView
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:text="Allergy image analysis"
+            android:textStyle="bold"
+            android:paddingTop="16dp" />
+
+        <Button
+            android:id="@+id/btnPickImage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Select image" />
+
+        <TextView
+            android:id="@+id/txtSelectedImage"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="No image selected"
+            android:textSize="12sp" />
+
+        <Button
+            android:id="@+id/btnAnalyze"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Analyze reported LLM" />
+
+        <TextView
+            android:id="@+id/txtAnalysis"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:fontFamily="monospace"
+            android:textSize="12sp"
+            android:paddingTop="8dp" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
             android:text="Log"
             android:textStyle="bold"
             android:paddingTop="16dp" />

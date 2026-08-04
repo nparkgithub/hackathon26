@@ -4,20 +4,23 @@
     "parameters": "8B",
     "quantization": "Q4_K_M",
     "context_length": 128000,
-    "family": "llama"
+    "family": "llama",
+    "vision": false
   },
   {
     "name": "qwen2.5-coder",
     "parameters": "14B",
     "quantization": "Q5_K_M",
     "context_length": 32768,
-    "family": "qwen"
+    "family": "qwen",
+    "vision": false
   },
   {
     "name": "phi4",
     "parameters": "14B",
     "quantization": "Q4_0",
     "context_length": 16384,
-    "family": "phi"
+    "family": "phi",
+    "vision": false
   }
 ]

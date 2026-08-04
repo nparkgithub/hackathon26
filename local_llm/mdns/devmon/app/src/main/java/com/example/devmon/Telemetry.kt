@@ -1,12 +1,15 @@
 package com.example.devmon
 
 import org.json.JSONObject
+import java.net.URI
 
 /** One telemetry snapshot pushed by a desktop peer. */
 data class Telemetry(
     val host: String,
     val os: String,
     val ip: String,
+    /** LAN Ollama URL reported by discover_and_report.py; null if unavailable/unsafe. */
+    val ollamaEndpoint: String?,
     val iface: String,
     val cpuPercent: Double,
     val cpuCount: Int,
@@ -22,6 +25,7 @@ data class Telemetry(
         val quantization: String,
         val contextLength: Int,
         val family: String,
+        val vision: Boolean,
     )
 
     companion object {
@@ -55,6 +59,7 @@ data class Telemetry(
                 host = o.optString("host", "?"),
                 os = o.optString("os", "?"),
                 ip = o.optString("ip", "?"),
+                ollamaEndpoint = endpointFrom(o.optString("ollama_endpoint", "")),
                 iface = o.optString("interface", "?"),
                 cpuPercent = o.optDouble("cpu_percent", 0.0),
                 cpuCount = o.optInt("cpu_count", 0),
@@ -70,6 +75,25 @@ data class Telemetry(
             quantization = o.optString("quantization", "?"),
             contextLength = o.optInt("context_length", 0),
             family = o.optString("family", "?"),
+            vision = o.optBoolean("vision", false),
         )
+
+        /**
+         * Android only accepts an explicit IPv4 LAN URL emitted by the reporter.
+         * Do not use localhost, DNS names, Android's own address, or telemetry.ip
+         * as substitutes when this field is absent.
+         */
+        private fun endpointFrom(raw: String): String? {
+            val uri = runCatching { URI(raw) }.getOrNull() ?: return null
+            val host = uri.host ?: return null
+            if (uri.scheme != "http" || uri.userInfo != null || uri.query != null || uri.fragment != null) return null
+            if (uri.path.isNotEmpty() && uri.path != "/") return null
+            val octets = host.split('.')
+            if (octets.size != 4 || octets.any { it.toIntOrNull()?.let { n -> n !in 0..255 } != false }) return null
+            if (octets[0] == "127" || host == "0.0.0.0") return null
+            val port = uri.port
+            if (port !in 1..65535) return null
+            return "http://$host:$port"
+        }
     }
 }

@@ -27,6 +27,9 @@ pip/cert issues).
 Everything lives under `local_llm/mdns/`:
 
 - `discover_and_report.py` — the Windows/Python client. Single-file, no local package structure.
+- `llm_info.json` — a JSON *array* of local-LLM labels, one object per model, sent in each
+  telemetry frame (see "Static LLM labels" below). Checked in with three placeholder records; these
+  are illustrative, not read from a live inference server, so correct them per machine.
 - `requirements.txt` — `zeroconf`, `psutil`.
 - `devmon/` — the Android Gradle project, checked in as plain source (previously shipped as a zip
   with build artifacts baked in — it's been unpacked and pruned down to source only).
@@ -61,6 +64,7 @@ py -m venv .venv
 .venv\Scripts\python discover_and_report.py --advertise [NAME]    # stand in for the Android side
 .venv\Scripts\python discover_and_report.py --scan                # skip mDNS; TCP-probe the /24 subnet on FIXED_PORT
 .venv\Scripts\python discover_and_report.py --interval 5 -q       # custom interval, quiet
+.venv\Scripts\python discover_and_report.py --llm-info other.json # LLM label from another file
 ```
 
 If `pip install` fails with `SSLCertVerificationError` (common behind a corporate TLS-intercepting
@@ -131,10 +135,35 @@ as `StateFlow`s and combined/rendered in `MainActivity.render()`. `NsdManager` m
 service on collision, so the advertised name is always read back from `onServiceRegistered`, never
 assumed from what was requested.
 
-**Static LLM label**: `LLM_INFO` in `discover_and_report.py` is a hardcoded dict describing
-whatever local LLM this PC happens to be set up to serve (name/params/quantization/context
-length) — it is not queried from a live inference server. Edit it directly if the local setup
-changes; there's no config file for it.
+**Static LLM labels**: the payload describes whichever local LLMs this PC is set up to serve
+(name/params/quantization/context length) — fixed labels, *not* queried from a live inference
+server. Read once at startup by `load_llm_info()` from `llm_info.json` (path resolved next to
+`discover_and_report.py`, so cwd doesn't matter; override with `--llm-info PATH`) into the
+`LLM_INFO` list. Edit that JSON when the local setup changes; **multiple models are supported**,
+one object per record.
+
+The canonical file shape is a JSON array. A bare object is still accepted and treated as a
+one-record list, so files written before multi-model support keep working.
+
+*Two keys on the wire, deliberately.* `llms` carries every record; `llm` repeats the first one so a
+phone build predating this change still renders something rather than nothing — the two schemas are
+synced by hand, so assume stale APKs exist. **A reader that understands `llms` must ignore `llm`,
+or the first model renders twice.** `Telemetry.from()` does this: it parses `llms` when present and
+only falls back to `optJSONObject("llm")` when the array is absent. `MainActivity.render()` then
+prints a `Local LLMs (n):` block, or nothing at all when the list is empty.
+
+Loading is deliberately non-fatal — a broken config costs the labels, not the telemetry stream. Every
+failure path warns and returns `[]` (missing file, unreadable, malformed JSON, wrong top-level type,
+no usable records). Non-object entries inside an array are dropped individually with a count, so one
+bad record doesn't cost the others their labels.
+
+Keys are passed through verbatim; `Telemetry.Llm` reads
+`name`/`parameters`/`quantization`/`context_length`/`family` and ignores extras, so adding a field
+here stays invisible to the phone until that Kotlin data class is updated to match.
+
+All of the above was verified on a physical SM-S911U1 (API 36) over `adb forward` + `--connect`:
+a 3-record file rendered all three with no duplicated primary, a legacy `llm`-only frame rendered
+one, and `{"llms": [], "llm": null}` rendered no LLM section.
 
 **mDNS multicast blocked by AP client isolation**: on some networks (confirmed on a
 `Public`-classified corporate/guest WiFi) mDNS discovery silently finds nothing even though both
