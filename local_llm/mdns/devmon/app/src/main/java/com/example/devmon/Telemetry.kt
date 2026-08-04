@@ -12,7 +12,8 @@ data class Telemetry(
     val cpuCount: Int,
     val memPercent: Double,
     val interfaces: List<Iface>,
-    val llm: Llm?,
+    /** Every model the peer reports; empty if it sent none. */
+    val llms: List<Llm>,
 ) {
     data class Iface(val name: String, val ipv4: String, val speedMbps: Int?, val up: Boolean)
     data class Llm(
@@ -38,14 +39,17 @@ data class Telemetry(
                     )
                 }
             }
-            val llm = o.optJSONObject("llm")?.let {
-                Llm(
-                    name = it.optString("name", "?"),
-                    parameters = it.optString("parameters", "?"),
-                    quantization = it.optString("quantization", "?"),
-                    contextLength = it.optInt("context_length", 0),
-                    family = it.optString("family", "?"),
-                )
+            // Peers send every model under `llms`. Older ones send a single
+            // object under `llm`; newer ones repeat the first record there for
+            // exactly that reason, so only read it when `llms` is absent.
+            val llms = mutableListOf<Llm>()
+            val llmArr = o.optJSONArray("llms")
+            if (llmArr != null) {
+                for (i in 0 until llmArr.length()) {
+                    llmArr.optJSONObject(i)?.let { llms += llmFrom(it) }
+                }
+            } else {
+                o.optJSONObject("llm")?.let { llms += llmFrom(it) }
             }
             return Telemetry(
                 host = o.optString("host", "?"),
@@ -56,8 +60,16 @@ data class Telemetry(
                 cpuCount = o.optInt("cpu_count", 0),
                 memPercent = o.optDouble("mem_percent", 0.0),
                 interfaces = ifaces,
-                llm = llm,
+                llms = llms,
             )
         }
+
+        private fun llmFrom(o: JSONObject) = Llm(
+            name = o.optString("name", "?"),
+            parameters = o.optString("parameters", "?"),
+            quantization = o.optString("quantization", "?"),
+            contextLength = o.optInt("context_length", 0),
+            family = o.optString("family", "?"),
+        )
     }
 }

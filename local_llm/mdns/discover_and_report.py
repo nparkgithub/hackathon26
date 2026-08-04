@@ -31,6 +31,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import psutil
 from zeroconf import IPVersion, ServiceBrowser, ServiceInfo, ServiceListener, Zeroconf
@@ -43,16 +44,63 @@ DEFAULT_INTERVAL = 2.0
 # through (e.g. AP client isolation on guest/corporate WiFi).
 SCAN_PORT_DEFAULT = 47531
 
-# Static description of whatever local LLM this host is set up to run. Not
-# queried from a live server -- just a fixed label so the phone can display
-# which model this PC is paired with. Edit these fields to match your setup.
-LLM_INFO = {
-    "name": "llama3.1",
-    "parameters": "8B",
-    "quantization": "Q4_K_M",
-    "context_length": 128000,
-    "family": "llama",
-}
+# Description of the local LLM(s) this host is set up to run -- fixed labels so
+# the phone can display which models this PC is paired with, not something
+# queried from a live inference server. Read from JSON at startup and edited
+# per machine; the default file sits next to this script so the working
+# directory doesn't matter. Override the path with --llm-info.
+LLM_INFO_PATH = Path(__file__).resolve().parent / "llm_info.json"
+
+# Populated by load_llm_info() in main(); every record is reported. Stays empty
+# if the file is missing or malformed, in which case the phone shows no LLM
+# section at all -- better than a hardcoded model this host may not be running.
+LLM_INFO: list[dict] = []
+
+
+def load_llm_info(path: Path) -> list[dict]:
+    """Read the local-LLM descriptions, newest format first.
+
+    Canonical shape is a JSON array of objects, one per model. A bare object is
+    also accepted and treated as a single record, so files written before
+    multi-model support keep working.
+
+    Never fatal -- a broken config costs the labels, not the telemetry stream,
+    so every failure path returns [] after saying why.
+    """
+    try:
+        with path.open(encoding="utf-8") as f:
+            data = json.load(f)
+    except FileNotFoundError:
+        print(f"[!] no LLM info at {path} - reporting without it")
+        return []
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as e:
+        print(f"[!] cannot read {path}: {e} - reporting without it")
+        return []
+
+    if isinstance(data, dict):
+        raw = [data]
+    elif isinstance(data, list):
+        raw = data
+    else:
+        print(f"[!] {path} must hold a JSON array or object, "
+              f"got {type(data).__name__} - reporting without it")
+        return []
+
+    # Drop non-object entries rather than failing the whole file: one bad record
+    # shouldn't cost the others their labels.
+    records = [r for r in raw if isinstance(r, dict)]
+    if len(records) != len(raw):
+        print(f"[!] {path}: ignored {len(raw) - len(records)} entry/entries that "
+              f"were not JSON objects")
+    if not records:
+        print(f"[!] {path} held no usable records - reporting without it")
+        return []
+
+    # Keys are passed through verbatim; the Kotlin `Telemetry.Llm` parser reads
+    # name/parameters/quantization/context_length/family and ignores the rest.
+    listed = ", ".join(f"{r.get('name', '?')} ({r.get('parameters', '?')})" for r in records)
+    print(f"[*] {len(records)} LLM record(s) from {path}: {listed}")
+    return records
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +203,12 @@ def telemetry(peer_ip: str | None, peer_port: int) -> dict:
         "per_cpu_percent": psutil.cpu_percent(interval=None, percpu=True),
         "mem_percent": vm.percent,
         "interfaces": interface_snapshot(),
-        "llm": LLM_INFO,
+        # `llms` carries every record. `llm` repeats the first one purely so a
+        # phone build predating multi-model support still renders something --
+        # the two schemas are synced by hand, so assume old APKs are in the wild.
+        # Readers that understand `llms` must ignore `llm` to avoid duplicating it.
+        "llm": (LLM_INFO[0] if LLM_INFO else None),
+        "llms": LLM_INFO,
     }
 
 
@@ -357,6 +410,9 @@ def main() -> int:
                         "AdvertiserService.FIXED_PORT on the Android side)")
     p.add_argument("--scan-timeout", type=float, default=0.3,
                    help="per-host connect timeout in seconds for --scan (default 0.3)")
+    p.add_argument("--llm-info", type=Path, default=LLM_INFO_PATH, metavar="PATH",
+                   help=f"JSON object describing this host's local LLM "
+                        f"(default: {LLM_INFO_PATH.name} beside this script)")
     p.add_argument("--interval", type=float, default=DEFAULT_INTERVAL, help="seconds between samples")
     p.add_argument("-q", "--quiet", action="store_true", help="do not echo each sample")
     args = p.parse_args()
@@ -364,8 +420,13 @@ def main() -> int:
     psutil.cpu_percent(interval=None)  # prime; first call always reads 0.0
 
     if args.advertise:
+        # The stub advertiser receives telemetry, it never sends any, so it has
+        # no use for the LLM label -- don't warn about a config it won't read.
         run_advertiser(args.advertise)
         return 0
+
+    global LLM_INFO
+    LLM_INFO = load_llm_info(args.llm_info)
 
     if args.connect:
         host, _, port = args.connect.rpartition(":")

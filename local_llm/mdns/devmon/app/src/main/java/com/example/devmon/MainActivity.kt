@@ -92,9 +92,12 @@ class MainActivity : AppCompatActivity() {
                             appendLine("    - ${i.name}: ${i.ipv4} ($speed${if (i.up) "" else ", down"})")
                         }
                     }
-                    t.llm?.let { llm ->
-                        appendLine("  LLM        ${llm.name}  ${llm.parameters} params  ${llm.quantization}")
-                        appendLine("             ctx ${llm.contextLength}  family ${llm.family}")
+                    if (t.llms.isNotEmpty()) {
+                        appendLine("  Local LLMs (${t.llms.size}):")
+                        t.llms.forEach { llm ->
+                            appendLine("    - ${llm.name}  ${llm.parameters} params  ${llm.quantization}")
+                            appendLine("      ctx ${llm.contextLength}  family ${llm.family}")
+                        }
                     }
                 }
             }
