@@ -1,10 +1,14 @@
 //! JNI bridge between the Android apps (com.mpquic.core.TquicBridge) and the
 //! TQUIC engine. One engine (client or server) runs per process.
+//!
+//! The engine modules are public so non-Android frontends (e.g. the Linux
+//! CLI under ../linux) can reuse them; only the Java_* exports below are
+//! Android-specific.
 
-mod config;
-mod engine;
-mod output;
-mod socket;
+pub mod config;
+pub mod engine;
+pub mod output;
+pub mod socket;
 #[cfg(test)]
 mod tests;
 
