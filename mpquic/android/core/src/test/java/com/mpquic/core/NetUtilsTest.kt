@@ -75,6 +75,14 @@ class NetUtilsTest {
     }
 
     @Test
+    fun hostOf_handlesV4AndBracketedV6() {
+        assertEquals("10.73.51.51", NetUtils.hostOf("10.73.51.51:4433"))
+        assertEquals("::1", NetUtils.hostOf("[::1]:4433"))
+        assertEquals("2607:fb90::2", NetUtils.hostOf("[2607:fb90::2]:52612"))
+        assertEquals("0.0.0.0", NetUtils.hostOf("0.0.0.0:4433"))
+    }
+
+    @Test
     fun defaultLocalAddresses_deduplicates() {
         val ifaces = listOf(
             IfaceAddrs("wlan0", listOf("1.2.3.4"), emptyList()),

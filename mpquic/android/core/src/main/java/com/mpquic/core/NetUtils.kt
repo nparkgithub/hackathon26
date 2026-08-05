@@ -98,6 +98,36 @@ object NetUtils {
     /** Drop the IPv6 zone id ("fe80::1%wlan0" -> "fe80::1"). */
     fun stripScope(host: String): String = host.substringBefore('%')
 
+    /** Extract the host from "ip:port" / "[v6]:port" ("[::1]:443" -> "::1"). */
+    fun hostOf(hostPort: String): String {
+        val s = hostPort.trim()
+        return if (s.startsWith("[")) {
+            s.substringAfter('[').substringBefore(']')
+        } else {
+            s.substringBeforeLast(':')
+        }
+    }
+
+    /** Interface label for a path endpoint: "wlan0", "any" for wildcard, "?" unknown. */
+    fun ifaceLabelFor(hostPort: String): String {
+        val host = hostOf(hostPort)
+        if (host == "0.0.0.0" || host == "::") return "any"
+        return ifaceNameForIp(host) ?: "?"
+    }
+
+    /** Name of the local interface owning [ip], or null if none matches. */
+    fun ifaceNameForIp(ip: String): String? {
+        try {
+            for (nif in NetworkInterface.getNetworkInterfaces()) {
+                for (addr in nif.inetAddresses) {
+                    if (stripScope(addr.hostAddress.orEmpty()) == ip) return nif.name
+                }
+            }
+        } catch (_: Exception) {
+        }
+        return null
+    }
+
     /**
      * TX byte counters per interface as reported by the `ifconfig` binary
      * (per user request — no /sys//proc kernel-tree reads), restricted to

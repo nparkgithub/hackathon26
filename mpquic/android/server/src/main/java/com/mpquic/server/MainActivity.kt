@@ -24,7 +24,12 @@ class MainActivity : AppCompatActivity() {
     private var fileLogger: FileLogger? = null
     private lateinit var pathGraph: PathGraphView
     private val prevPathPkts = mutableMapOf<String, Long>()
+    private val ifaceByIp = mutableMapOf<String, String>()
     private val logBuffer = StringBuilder()
+
+    /** Interface owning the local end of a path ("0.0.0.0:4433" -> "any"). */
+    private fun ifaceFor(localHostPort: String): String =
+        ifaceByIp.getOrPut(localHostPort) { NetUtils.ifaceLabelFor(localHostPort) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -139,7 +144,8 @@ class MainActivity : AppCompatActivity() {
         val samples = mutableMapOf<String, Float>()
         for (i in 0 until paths.length()) {
             val p = paths.getJSONObject(i)
-            val key = "${p.optString("local")} <- ${p.optString("remote")}"
+            val local = p.optString("local")
+            val key = "${ifaceFor(local)} ${local} <- ${p.optString("remote")}"
             sb.append(
                 "path $key\n" +
                     "  srtt=${p.optLong("srtt_us") / 1000.0}ms" +

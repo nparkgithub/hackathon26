@@ -30,8 +30,13 @@ class MainActivity : AppCompatActivity() {
     private var fileLogger: FileLogger? = null
     private lateinit var pathGraph: PathGraphView
     private val prevPathPkts = mutableMapOf<String, Long>()
+    private val ifaceByIp = mutableMapOf<String, String>()
     private val logBuffer = StringBuilder()
     private var connected = false
+
+    /** Interface owning the local end of a path ("10.73.51.51:39696" -> "wlan0"). */
+    private fun ifaceFor(localHostPort: String): String =
+        ifaceByIp.getOrPut(localHostPort) { NetUtils.ifaceLabelFor(localHostPort) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -45,9 +50,11 @@ class MainActivity : AppCompatActivity() {
         val mpAlgo = findViewById<Spinner>(R.id.mpAlgo)
         val ccAlgo = findViewById<Spinner>(R.id.ccAlgo)
         val logLevel = findViewById<Spinner>(R.id.logLevel)
+        val bulkSize = findViewById<Spinner>(R.id.bulkSize)
         setSpinner(mpAlgo, listOf("minrtt", "redundant", "roundrobin"), 0)
         setSpinner(ccAlgo, listOf("bbr", "cubic", "bbr3", "copa"), 0)
         setSpinner(logLevel, listOf("off", "error", "warn", "info", "debug", "trace"), 3)
+        setSpinner(bulkSize, listOf("1 MB", "10 MB", "25 MB", "30 MB", "40 MB", "50 MB", "100 MB"), 0)
 
         findViewById<TextView>(R.id.deviceIps).text =
             "Device IPs: " + NetUtils.deviceAddresses()
@@ -129,9 +136,14 @@ class MainActivity : AppCompatActivity() {
         }
 
         sendBulkBtn.setOnClickListener {
-            val payload = ByteArray(1024 * 1024) { (it % 251).toByte() }
+            val sizeMb = bulkSize.selectedItem.toString().substringBefore(' ').toInt()
+            val unit = ByteArray(1024 * 1024) { (it % 251).toByte() }
+            val payload = ByteArray(sizeMb * unit.size)
+            for (i in 0 until sizeMb) {
+                unit.copyInto(payload, i * unit.size)
+            }
             engine.send(payload)
-            appendLog("I: sent 1 MiB test payload")
+            appendLog("I: sent $sizeMb MB test payload")
         }
     }
 
@@ -220,7 +232,8 @@ class MainActivity : AppCompatActivity() {
         val samples = mutableMapOf<String, Float>()
         for (i in 0 until paths.length()) {
             val p = paths.getJSONObject(i)
-            val key = "${p.optString("local")} -> ${p.optString("remote")}"
+            val local = p.optString("local")
+            val key = "${ifaceFor(local)} ${local} -> ${p.optString("remote")}"
             sb.append(
                 "path $key\n" +
                     "  srtt=${p.optLong("srtt_us") / 1000.0}ms" +

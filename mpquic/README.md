@@ -190,7 +190,7 @@ while the Ninja generator emits them in `build/`. Patched to check
    IPv4 and IPv6 — the live "Path interfaces" line shows what was found.
    Turn the auto-fill switch off to edit the list manually. Choose scheduler
    (`redundant` duplicates every packet on all paths), Connect, then Send
-   text or the 1 MiB test payload. Stats show per-path SRTT/cwnd/bytes so
+   text or a test payload (1–100 MB, selectable). Stats show per-path SRTT/cwnd/bytes so
    you can watch traffic split across paths.
 
 Android notes: the client's `NetworkMonitor` already holds the cellular

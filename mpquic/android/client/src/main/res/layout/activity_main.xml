@@ -169,12 +169,26 @@
                     android:text="Send" />
             </LinearLayout>
 
-            <Button
-                android:id="@+id/sendBulkBtn"
+            <LinearLayout
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:enabled="false"
-                android:text="Send 1 MiB test payload" />
+                android:orientation="horizontal">
+
+                <Spinner
+                    android:id="@+id/bulkSize"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:layout_gravity="center_vertical" />
+
+                <Button
+                    android:id="@+id/sendBulkBtn"
+                    android:layout_width="0dp"
+                    android:layout_weight="2"
+                    android:layout_height="wrap_content"
+                    android:enabled="false"
+                    android:text="Send test payload" />
+            </LinearLayout>
 
             <TextView
                 android:id="@+id/stats"
