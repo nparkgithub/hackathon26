@@ -170,7 +170,7 @@
     <TextView
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Per-path packets sent (last 60s)"
+        android:text="Per-path bytes sent (last 60s)"
         android:textStyle="bold"
         android:textSize="11sp"
         android:paddingTop="6dp" />

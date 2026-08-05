@@ -23,7 +23,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statsView: TextView
     private var fileLogger: FileLogger? = null
     private lateinit var pathGraph: PathGraphView
-    private val prevPathPkts = mutableMapOf<String, Long>()
+    private val prevPathBytes = mutableMapOf<String, Long>()
     private val ifaceByIp = mutableMapOf<String, String>()
     private val logBuffer = StringBuilder()
 
@@ -87,7 +87,7 @@ class MainActivity : AppCompatActivity() {
 
         stopBtn.setOnClickListener {
             engine.stop()
-            prevPathPkts.clear()
+            prevPathBytes.clear()
             statsView.text = "Not running"
             startBtn.isEnabled = true
             stopBtn.isEnabled = false
@@ -154,13 +154,13 @@ class MainActivity : AppCompatActivity() {
                     " rx=${p.optLong("recv_bytes")}B" +
                     " lost=${p.optLong("lost_pkts")}\n"
             )
-            // Packets sent since the previous stats tick -> graph sample.
-            val pkts = p.optLong("sent_pkts")
-            val prev = prevPathPkts[key]
-            if (prev != null && pkts >= prev) {
-                samples[key] = (pkts - prev).toFloat()
+            // Bytes sent since the previous stats tick -> graph sample.
+            val sentBytes = p.optLong("sent_bytes")
+            val prev = prevPathBytes[key]
+            if (prev != null && sentBytes >= prev) {
+                samples[key] = (sentBytes - prev).toFloat()
             }
-            prevPathPkts[key] = pkts
+            prevPathBytes[key] = sentBytes
         }
         if (samples.isNotEmpty()) pathGraph.addSamples(samples)
         statsView.text = sb.toString()

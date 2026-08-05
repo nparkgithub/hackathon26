@@ -30,7 +30,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var ifaceStatus: TextView
     private var fileLogger: FileLogger? = null
     private lateinit var pathGraph: PathGraphView
-    private val prevPathPkts = mutableMapOf<String, Long>()
+    private val prevPathBytes = mutableMapOf<String, Long>()
     private val ifaceByIp = mutableMapOf<String, String>()
     private val logBuffer = StringBuilder()
     private var udpIngest: UdpIngest? = null
@@ -127,7 +127,7 @@ class MainActivity : AppCompatActivity() {
         disconnectBtn.setOnClickListener {
             engine.stop()
             connected = false
-            prevPathPkts.clear()
+            prevPathBytes.clear()
             statsView.text = "Not connected"
             connectBtn.isEnabled = true
             disconnectBtn.isEnabled = false
@@ -242,7 +242,7 @@ class MainActivity : AppCompatActivity() {
                 // A client with no connection is done — stop the engine so
                 // Connect works again immediately.
                 engine.stop()
-                prevPathPkts.clear()
+                prevPathBytes.clear()
                 statsView.text = "Not connected"
                 findViewById<Button>(R.id.connectBtn).isEnabled = true
                 findViewById<Button>(R.id.disconnectBtn).isEnabled = false
@@ -293,13 +293,13 @@ class MainActivity : AppCompatActivity() {
                     " rx=${p.optLong("recv_bytes")}B" +
                     " lost=${p.optLong("lost_pkts")}\n"
             )
-            // Packets sent since the previous stats tick -> graph sample.
-            val pkts = p.optLong("sent_pkts")
-            val prev = prevPathPkts[key]
-            if (prev != null && pkts >= prev) {
-                samples[key] = (pkts - prev).toFloat()
+            // Bytes sent since the previous stats tick -> graph sample.
+            val sentBytes = p.optLong("sent_bytes")
+            val prev = prevPathBytes[key]
+            if (prev != null && sentBytes >= prev) {
+                samples[key] = (sentBytes - prev).toFloat()
             }
-            prevPathPkts[key] = pkts
+            prevPathBytes[key] = sentBytes
         }
         if (samples.isNotEmpty()) pathGraph.addSamples(samples)
         statsView.text = sb.toString()

@@ -8,15 +8,15 @@ import android.util.AttributeSet
 import android.view.View
 
 /**
- * Rolling line graph of per-path activity: X = time (last 60 s), Y = packets
+ * Rolling line graph of per-path activity: X = time (last 60 s), Y = bytes
  * sent per stats interval (~1 s). One series per tquic path, colored from a
  * fixed palette in order of appearance — a single path draws one line,
  * multipath draws one color per path. Legend shows each path's 4-tuple.
  *
  * The view refreshes itself every 2 s while attached, so the time window
  * keeps sliding even between stats ticks; new samples also redraw
- * immediately. Axis ranges are labeled: Y max and midpoint (pkts/s, auto-
- * scaled) and the X range from -60 s to now.
+ * immediately. Axis ranges are labeled: Y max/mid/0 (B/s, KB/s or MB/s,
+ * auto-scaled) and the X range from -60 s to now.
  */
 class PathGraphView @JvmOverloads constructor(
     context: Context,
@@ -92,7 +92,7 @@ class PathGraphView @JvmOverloads constructor(
         trim(now)
         val t0 = now - WINDOW_MS
 
-        var maxY = 10f
+        var maxY = 1024f
         for (s in series.values) {
             for (p in s.points) if (p.second > maxY) maxY = p.second
         }
@@ -108,10 +108,8 @@ class PathGraphView @JvmOverloads constructor(
         for (frac in floatArrayOf(1f, 0.5f, 0f)) {
             val y = yFor(maxY * frac)
             canvas.drawLine(0f, y, w, y, gridPaint)
-            val label = "${(maxY * frac).toInt()}"
-            canvas.drawText(label, 8f, y - 6f, textPaint)
+            canvas.drawText(formatRate(maxY * frac), 8f, y - 6f, textPaint)
         }
-        canvas.drawText("pkts/s", 8f, yFor(maxY) + 24f, textPaint)
 
         // X range labels: -60 s .. now.
         val xLabelY = h - 8f
@@ -119,7 +117,8 @@ class PathGraphView @JvmOverloads constructor(
         canvas.drawText("-30s", w / 2f - 30f, xLabelY, textPaint)
         canvas.drawText("now", w - 70f, xLabelY, textPaint)
 
-        var legendY = 26f
+        // Legend starts below the top y-axis label to avoid overlap.
+        var legendY = 60f
         for ((key, s) in series) {
             linePaint.color = s.color
             var prevX = 0f
@@ -134,9 +133,15 @@ class PathGraphView @JvmOverloads constructor(
                 first = false
             }
             textPaint.color = s.color
-            canvas.drawText(key, 110f, legendY, textPaint)
+            canvas.drawText(key, 8f, legendY, textPaint)
             legendY += 28f
         }
+    }
+
+    private fun formatRate(v: Float): String = when {
+        v >= 1024f * 1024f -> "%.1f MB/s".format(v / (1024f * 1024f))
+        v >= 1024f -> "%.1f KB/s".format(v / 1024f)
+        else -> "${v.toInt()} B/s"
     }
 
     private companion object {
