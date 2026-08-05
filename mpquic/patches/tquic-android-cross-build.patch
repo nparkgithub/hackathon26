@@ -1,0 +1,21 @@
+diff --git a/src/build.rs b/src/build.rs
+index 98f5ba6..b37d0f1 100644
+--- a/src/build.rs
++++ b/src/build.rs
+@@ -139,7 +139,15 @@ fn new_boringssl_cmake_config() -> cmake::Config {
+ 
+ /// Return the build sub-dir for boringssl.
+ fn get_boringssl_build_sub_dir() -> &'static str {
+-    if !cfg!(target_env = "msvc") {
++    // Note: check the *target* env rather than cfg!(), which reflects the
++    // host when cross-compiling (e.g. Windows host -> Android target).
++    let target_env = std::env::var("CARGO_CFG_TARGET_ENV").unwrap_or_default();
++    if target_env != "msvc" {
++        return "";
++    }
++    // MSVC multi-config generators output static libs in a sub-directory,
++    // but the Ninja generator does not.
++    if std::env::var("CMAKE_GENERATOR").as_deref() == Ok("Ninja") {
+         return "";
+     }
+ 

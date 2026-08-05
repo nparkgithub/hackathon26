@@ -2,3 +2,6 @@
 	path = VideoShowCase
 	url = git@github.com:sukoonsarin/VideoShowCase.git
 	branch = hackathon26-arfood
+[submodule "mpquic/tquic"]
+	path = mpquic/tquic
+	url = https://github.com/Tencent/tquic.git
