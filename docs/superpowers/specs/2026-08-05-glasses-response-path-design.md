@@ -20,7 +20,7 @@ This design covers the return leg: phone → glasses, plus display and spoken pl
 
 1. When an answer arrives, the glasses **speak the full text** and **display a short summary line**.
 2. The payload is **structured**, not a bare string, so the display line and spoken text can differ and confidence can be shown.
-3. **One capture at a time.** After sending, the glasses wait; further capture taps are ignored until the answer arrives or the wait times out.
+3. **One capture at a time.** After sending, the glasses wait; further capture taps are ignored until the flow returns to `READY` — which is after playback finishes, not merely when the answer arrives. A tap during playback is ignored.
 4. The response travels over the **existing capture connection** — no new socket, no new port.
 5. A TTS failure must not lose the answer: the text still appears on screen.
 
@@ -103,10 +103,19 @@ Parsed with `org.json.JSONObject`, which ships with Android — the glass module
 **`AnswerProvider`** *(new)* — the seam for the out-of-scope work:
 
 ```kotlin
+/** Phone-side answer, serialised into the 0x14 payload. */
+data class CaptureAnswer(
+    val speak: String,
+    val display: String,
+    val confidence: String? = null,   // "high" | "medium" | "low"
+)
+
 interface AnswerProvider {
     suspend fun answer(captureId: String, image: File, query: String?): CaptureAnswer
 }
 ```
+
+`CaptureAnswer` deliberately omits `captureId` — the server already knows which capture it is answering and stamps it when serialising, so a provider cannot return a mismatched id.
 
 - **`EchoAnswerProvider`** — built now. Returns the transcribed query as the answer, making the full loop demoable immediately.
 - **`KoogAnswerProvider`** — built later. POSTs multipart to `/v1/compute` and maps `ComputeResponse` to `CaptureAnswer`.
