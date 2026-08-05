@@ -37,7 +37,7 @@ class MainActivity : AppCompatActivity() {
         setSpinner(logLevel, listOf("off", "error", "warn", "info", "debug", "trace"), 3)
 
         findViewById<TextView>(R.id.deviceIps).text =
-            "Device IPs: " + NetUtils.deviceIpv4Addresses()
+            "Device IPs: " + NetUtils.deviceAddresses()
                 .joinToString(", ") { (nif, ip) -> "$nif=$ip" }
                 .ifEmpty { "none" }
 

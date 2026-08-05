@@ -38,12 +38,28 @@
                 android:inputType="text"
                 android:text="10.0.2.2:4433" />
 
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/autoAddrSwitch"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:checked="true"
+                android:text="Auto-fill local IPs from wlan + rmnet_data (IPv4 + IPv6)" />
+
             <EditText
                 android:id="@+id/localAddrs"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
-                android:hint="Local IPs for paths, comma-separated (blank = auto)"
+                android:hint="Local IPs for paths, comma-separated (blank = any)"
                 android:inputType="text" />
+
+            <TextView
+                android:id="@+id/ifaceStatus"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:fontFamily="monospace"
+                android:textSize="11sp"
+                android:paddingBottom="4dp"
+                android:text="Path interfaces: scanning..." />
 
             <com.google.android.material.switchmaterial.SwitchMaterial
                 android:id="@+id/multipathSwitch"

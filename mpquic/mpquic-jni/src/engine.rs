@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use log::{error, info};
+use log::{error, info, warn};
 use mio::{Events, Poll, Token, Waker};
 use serde_json::json;
 use tquic::{Config, Connection, Endpoint, PacketInfo, TlsConfig, TransportHandler};
@@ -337,7 +337,7 @@ fn run_inner(
         (sock, None)
     } else {
         let remote = parse_addr(cfg.connect_to.as_deref().ok_or("missing connect_to")?)?;
-        let locals: Vec<IpAddr> = cfg
+        let mut locals: Vec<IpAddr> = cfg
             .local_addresses
             .iter()
             .filter(|s| !s.trim().is_empty())
@@ -347,6 +347,25 @@ fn run_inner(
                     .map_err(|e| format!("invalid local IP '{s}': {e}"))
             })
             .collect::<Result<_, _>>()?;
+
+        // A UDP socket bound to one address family cannot reach a remote in
+        // the other, so drop mismatched entries — the UI hands us a mixed
+        // v4+v6 list harvested from the wlan/rmnet_data interfaces.
+        locals.retain(|ip| {
+            let family_ok = ip.is_ipv4() == remote.is_ipv4();
+            if !family_ok {
+                warn!("skipping local address {ip}: address family differs from server {remote}");
+                output::push_event(
+                    json!({
+                        "type": "path_skipped",
+                        "local": ip.to_string(),
+                        "reason": format!("address family differs from server {remote}"),
+                    })
+                    .to_string(),
+                );
+            }
+            family_ok
+        });
 
         let first = match locals.first() {
             Some(ip) => SocketAddr::new(*ip, 0),
@@ -450,8 +469,13 @@ fn run_inner(
             .timeout()
             .map(|t| t.min(STATS_INTERVAL))
             .unwrap_or(STATS_INTERVAL);
-        poll.poll(&mut events, Some(timeout))
-            .map_err(|e| format!("poll: {e}"))?;
+        // EINTR is routine on Android (GC/freezer signals) — retry, not die.
+        if let Err(e) = poll.poll(&mut events, Some(timeout)) {
+            if e.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(format!("poll: {e}"));
+        }
 
         for event in events.iter() {
             let token = event.token();
@@ -463,6 +487,7 @@ fn run_inner(
                 let (len, local, peer) = match sock.recv_from(&mut recv_buf, token) {
                     Ok(v) => v,
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                     Err(e) => return Err(format!("socket recv: {e}")),
                 };
                 let pkt_info = PacketInfo {

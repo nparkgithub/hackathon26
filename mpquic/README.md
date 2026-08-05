@@ -18,6 +18,20 @@ application protocol imposed) over **Multipath QUIC**.
 - **Multipath**: on/off, plus client-side list of local IPs — one QUIC path is
   created per IP (first = initial path, others added after handshake via
   `conn.add_path`).
+- **Auto-filled multipath addresses (client)**: by default the client watches
+  the `wlan*` (Wi-Fi) and `rmnet_data*` (cellular) interfaces and fills the
+  local-IP list with their IPv4 **and** IPv6 addresses (Wi-Fi first — it
+  becomes the initial path). A `NetworkMonitor` built on
+  `ConnectivityManager` keeps the list fresh as networks come and go, and
+  actively *requests* the cellular network so Android keeps `rmnet_data`
+  configured while Wi-Fi is the default route. Flip the "Auto-fill" switch
+  off to type addresses manually.
+- **IPv4 + IPv6**: tquic paths are address-family agnostic; enter
+  `[2001:db8::1]:4433`-style server addresses for IPv6 (server can listen on
+  `[::]:4433`, which also accepts IPv4 as v4-mapped). Because one UDP socket
+  can only reach a remote of its own family, the engine skips auto-filled
+  local addresses whose family differs from the server address and emits a
+  `path_skipped` event instead of failing.
 - **Multipath scheduler**: `minrtt`, `redundant`, `roundrobin`.
 - **Congestion control**: `bbr`, `cubic`, `bbr3`, `copa`.
 - **Log level**: `off` … `trace` (tquic's own logs streamed into the app UI).
@@ -153,16 +167,20 @@ while the Ninja generator emits them in `build/`. Patched to check
 1. **Server device**: install server APK, pick listen address (default
    `0.0.0.0:4433`), choose algorithms + log level, Start. Its IPs are shown at
    the top.
-2. **Client device**: enter `serverIP:4433`, optionally list its own local IPs
-   (e.g. Wi-Fi + cellular) comma-separated for multipath, choose scheduler
-   (`redundant` duplicates every packet on all paths), Connect, then Send text
-   or the 1 MiB test payload. Stats show per-path SRTT/cwnd/bytes so you can
-   watch traffic split across paths.
+2. **Client device**: enter `serverIP:4433`. The local-IP list is pre-filled
+   (and kept up to date) from the `wlan*`/`rmnet_data*` interfaces, both
+   IPv4 and IPv6 — the live "Path interfaces" line shows what was found.
+   Turn the auto-fill switch off to edit the list manually. Choose scheduler
+   (`redundant` duplicates every packet on all paths), Connect, then Send
+   text or the 1 MiB test payload. Stats show per-path SRTT/cwnd/bytes so
+   you can watch traffic split across paths.
 
-Android note: sending from a source IP whose network is not the default route
-(e.g. cellular while Wi-Fi is up) may require holding that network via
-`ConnectivityManager.requestNetwork`; on typical demo setups (two interfaces
-both usable, or emulator) plain per-IP socket binding works.
+Android notes: the client's `NetworkMonitor` already holds the cellular
+network via `ConnectivityManager.requestNetwork`, so `rmnet_data` keeps its
+addresses while Wi-Fi is up. Auto-fill lists both families; locals whose
+family doesn't match the server address are skipped by the engine with a
+`path_skipped` event (one socket can't send across families), so an
+IPv4-only server still connects cleanly from a mixed v4+v6 list.
 
 ## Emulator quick test
 

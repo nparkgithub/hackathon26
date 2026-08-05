@@ -10,15 +10,21 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.mpquic.core.EngineController
+import com.mpquic.core.IfaceAddrs
 import com.mpquic.core.NetUtils
+import com.mpquic.core.NetworkMonitor
 import org.json.JSONArray
 import org.json.JSONObject
 
 class MainActivity : AppCompatActivity() {
     private lateinit var engine: EngineController
+    private lateinit var monitor: NetworkMonitor
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private lateinit var statsView: TextView
+    private lateinit var localAddrs: EditText
+    private lateinit var autoAddrSwitch: SwitchMaterial
+    private lateinit var ifaceStatus: TextView
     private val logBuffer = StringBuilder()
     private var connected = false
 
@@ -38,9 +44,24 @@ class MainActivity : AppCompatActivity() {
         setSpinner(logLevel, listOf("off", "error", "warn", "info", "debug", "trace"), 3)
 
         findViewById<TextView>(R.id.deviceIps).text =
-            "Device IPs: " + NetUtils.deviceIpv4Addresses()
+            "Device IPs: " + NetUtils.deviceAddresses()
                 .joinToString(", ") { (nif, ip) -> "$nif=$ip" }
                 .ifEmpty { "none" }
+
+        localAddrs = findViewById(R.id.localAddrs)
+        autoAddrSwitch = findViewById(R.id.autoAddrSwitch)
+        ifaceStatus = findViewById(R.id.ifaceStatus)
+
+        // Auto-fill the multipath local addresses from wlan*/rmnet_data* and
+        // keep them fresh as networks come and go; flip the switch off for
+        // manual entry.
+        monitor = NetworkMonitor(this, ::onIfacesChanged)
+        autoAddrSwitch.setOnCheckedChangeListener { _, checked ->
+            localAddrs.isEnabled = !checked
+            if (checked) monitor.refresh()
+        }
+        localAddrs.isEnabled = !autoAddrSwitch.isChecked
+        monitor.start()
 
         engine = EngineController(onLog = ::appendLog, onEvent = ::handleEvent)
 
@@ -56,7 +77,7 @@ class MainActivity : AppCompatActivity() {
                 put(
                     "local_addresses",
                     JSONArray(
-                        findViewById<EditText>(R.id.localAddrs).text.toString()
+                        localAddrs.text.toString()
                             .split(',')
                             .map { it.trim() }
                             .filter { it.isNotEmpty() }
@@ -105,6 +126,22 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    private fun onIfacesChanged(ifaces: List<IfaceAddrs>) {
+        ifaceStatus.text = if (ifaces.isEmpty()) {
+            "Path interfaces: none up (wlan*/rmnet_data*)"
+        } else {
+            "Path interfaces:\n" + ifaces.joinToString("\n") { i ->
+                "  ${i.name}: ${i.all.joinToString(", ").ifEmpty { "no usable address" }}"
+            }
+        }
+        if (autoAddrSwitch.isChecked) {
+            val text = NetUtils.defaultLocalAddresses(ifaces).joinToString(", ")
+            if (localAddrs.text.toString() != text) {
+                localAddrs.setText(text)
+            }
+        }
+    }
+
     private fun setSpinner(spinner: Spinner, items: List<String>, default: Int) {
         spinner.adapter = ArrayAdapter(
             this, android.R.layout.simple_spinner_dropdown_item, items
@@ -129,6 +166,14 @@ class MainActivity : AppCompatActivity() {
             "disconnected" -> {
                 connected = false
                 appendLog("I: disconnected")
+                // A client with no connection is done — stop the engine so
+                // Connect works again immediately.
+                engine.stop()
+                statsView.text = "Not connected"
+                findViewById<Button>(R.id.connectBtn).isEnabled = true
+                findViewById<Button>(R.id.disconnectBtn).isEnabled = false
+                findViewById<Button>(R.id.sendBtn).isEnabled = false
+                findViewById<Button>(R.id.sendBulkBtn).isEnabled = false
             }
             "stopped" -> appendLog("I: engine stopped")
             else -> appendLog("D: event $ev")
@@ -167,6 +212,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        monitor.stop()
         engine.stop()
     }
 }
