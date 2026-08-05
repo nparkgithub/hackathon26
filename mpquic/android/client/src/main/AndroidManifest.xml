@@ -3,7 +3,8 @@
         android:label="MPQUIC Client"
         android:icon="@android:drawable/stat_sys_download"
         android:theme="@style/Theme.MaterialComponents.DayNight.NoActionBar"
-        android:usesCleartextTraffic="true">
+        android:usesCleartextTraffic="true"
+        android:largeHeap="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"

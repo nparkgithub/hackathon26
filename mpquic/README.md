@@ -18,10 +18,43 @@ application protocol imposed) over **Multipath QUIC**.
 - **Multipath**: on/off, plus client-side list of local IPs — one QUIC path is
   created per IP (first = initial path, others added after handshake via
   `conn.add_path`).
+- **Auto-filled multipath addresses (client)**: by default the client watches
+  the `wlan*` (Wi-Fi) and `rmnet_data*` (cellular) interfaces and fills the
+  local-IP list with their IPv4 **and** IPv6 addresses (Wi-Fi first — it
+  becomes the initial path). A `NetworkMonitor` built on
+  `ConnectivityManager` keeps the list fresh as networks come and go, and
+  actively *requests* the cellular network so Android keeps `rmnet_data`
+  configured while Wi-Fi is the default route. Carrier-internal addresses
+  (192.x.x.x on rmnet_data*, e.g. the 464xlat CLAT address) are excluded
+  from the default fill. The field is always editable — the switch only
+  controls whether auto updates keep overwriting it.
+- **IPv4 + IPv6**: tquic paths are address-family agnostic; enter
+  `[2001:db8::1]:4433`-style server addresses for IPv6 (server can listen on
+  `[::]:4433`, which also accepts IPv4 as v4-mapped). Because one UDP socket
+  can only reach a remote of its own family, the engine skips auto-filled
+  local addresses whose family differs from the server address and emits a
+  `path_skipped` event instead of failing.
 - **Multipath scheduler**: `minrtt`, `redundant`, `roundrobin`.
 - **Congestion control**: `bbr`, `cubic`, `bbr3`, `copa`.
 - **Log level**: `off` … `trace` (tquic's own logs streamed into the app UI).
+- **Log files**: every log line is also appended to
+  `/sdcard/mpquic/client.log` / `server.log` when the app has the
+  "All files access" grant (`adb shell appops set com.mpquic.client
+  MANAGE_EXTERNAL_STORAGE allow`, same for the server); otherwise to
+  `/sdcard/Android/data/<pkg>/files/mpquic/`. The actual path is shown
+  above the log pane and printed as the first log line.
+- **Send summary (client)**: once a transfer finishes, the log shows the
+  payload size, the bytes each QUIC path carried, and per-interface TX
+  counters read from `ifconfig` (wlan*/rmnet_data*). Note: modern Android
+  denies /proc/net/dev to apps and `ifconfig` reads it internally, so when
+  that fails the summary falls back to the public TrafficStats API
+  (wifi vs mobile/rmnet TX since boot).
 - Server: echo toggle; both: live per-path stats (SRTT, cwnd, bytes, loss).
+- **Per-path graph**: below the (compact, auto-scrolling) log pane both apps
+  draw a rolling 60 s line graph of bytes sent per second on each tquic
+  path (Y auto-scales through B/s, KB/s, MB/s) — one line for a single
+  path, one color per path for multipath, with the interface name and path
+  4-tuple as a colored legend. Refreshes every 2 s.
 
 ## Kotlin ⇄ JNI ⇄ Rust: how the pieces connect
 
@@ -153,16 +186,26 @@ while the Ninja generator emits them in `build/`. Patched to check
 1. **Server device**: install server APK, pick listen address (default
    `0.0.0.0:4433`), choose algorithms + log level, Start. Its IPs are shown at
    the top.
-2. **Client device**: enter `serverIP:4433`, optionally list its own local IPs
-   (e.g. Wi-Fi + cellular) comma-separated for multipath, choose scheduler
-   (`redundant` duplicates every packet on all paths), Connect, then Send text
-   or the 1 MiB test payload. Stats show per-path SRTT/cwnd/bytes so you can
-   watch traffic split across paths.
+2. **Client device**: enter `serverIP:4433`. The local-IP list is pre-filled
+   (and kept up to date) from the `wlan*`/`rmnet_data*` interfaces, both
+   IPv4 and IPv6 — the live "Path interfaces" line shows what was found.
+   Turn the auto-fill switch off to edit the list manually. Choose scheduler
+   (`redundant` duplicates every packet on all paths), Connect, then Send
+   text or a test payload (1/2/5/10/25/30/40/50/100 MB, selectable), or
+   start **UDP RX** (default port 47474, chosen to be uncommon) and pipe any
+   external UDP datagrams into the QUIC connection — each datagram received
+   on that local port is forwarded to the server as opaque payload.
+   `tools/udp_sender.py` drives it from a desktop on the same network:
+   `python tools/udp_sender.py <phone-ip> -c 40 -s 1200 -i 0.25`.
+   Stats show per-path SRTT/cwnd/bytes so
+   you can watch traffic split across paths.
 
-Android note: sending from a source IP whose network is not the default route
-(e.g. cellular while Wi-Fi is up) may require holding that network via
-`ConnectivityManager.requestNetwork`; on typical demo setups (two interfaces
-both usable, or emulator) plain per-IP socket binding works.
+Android notes: the client's `NetworkMonitor` already holds the cellular
+network via `ConnectivityManager.requestNetwork`, so `rmnet_data` keeps its
+addresses while Wi-Fi is up. Auto-fill lists both families; locals whose
+family doesn't match the server address are skipped by the engine with a
+`path_skipped` event (one socket can't send across families), so an
+IPv4-only server still connects cleanly from a mixed v4+v6 list.
 
 ## Emulator quick test
 
