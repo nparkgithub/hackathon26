@@ -12,6 +12,7 @@ import com.google.android.material.switchmaterial.SwitchMaterial
 import com.mpquic.core.EngineController
 import com.mpquic.core.FileLogger
 import com.mpquic.core.NetUtils
+import com.mpquic.core.PathGraphView
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -21,6 +22,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logScroll: ScrollView
     private lateinit var statsView: TextView
     private var fileLogger: FileLogger? = null
+    private lateinit var pathGraph: PathGraphView
+    private val prevPathPkts = mutableMapOf<String, Long>()
     private val logBuffer = StringBuilder()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -30,6 +33,7 @@ class MainActivity : AppCompatActivity() {
         logView = findViewById(R.id.log)
         logScroll = findViewById(R.id.logScroll)
         statsView = findViewById(R.id.stats)
+        pathGraph = findViewById(R.id.pathGraph)
 
         val mpAlgo = findViewById<Spinner>(R.id.mpAlgo)
         val ccAlgo = findViewById<Spinner>(R.id.ccAlgo)
@@ -78,6 +82,7 @@ class MainActivity : AppCompatActivity() {
 
         stopBtn.setOnClickListener {
             engine.stop()
+            prevPathPkts.clear()
             statsView.text = "Not running"
             startBtn.isEnabled = true
             stopBtn.isEnabled = false
@@ -131,17 +136,27 @@ class MainActivity : AppCompatActivity() {
         sb.append("rx=${ev.optLong("recv_bytes")}B/${ev.optLong("recv_pkts")}p  ")
         sb.append("lost=${ev.optLong("lost_pkts")}\n")
         val paths = ev.optJSONArray("paths") ?: JSONArray()
+        val samples = mutableMapOf<String, Float>()
         for (i in 0 until paths.length()) {
             val p = paths.getJSONObject(i)
+            val key = "${p.optString("local")} <- ${p.optString("remote")}"
             sb.append(
-                "path ${p.optString("local")} <- ${p.optString("remote")}\n" +
+                "path $key\n" +
                     "  srtt=${p.optLong("srtt_us") / 1000.0}ms" +
                     " cwnd=${p.optLong("cwnd")}" +
                     " tx=${p.optLong("sent_bytes")}B" +
                     " rx=${p.optLong("recv_bytes")}B" +
                     " lost=${p.optLong("lost_pkts")}\n"
             )
+            // Packets sent since the previous stats tick -> graph sample.
+            val pkts = p.optLong("sent_pkts")
+            val prev = prevPathPkts[key]
+            if (prev != null && pkts >= prev) {
+                samples[key] = (pkts - prev).toFloat()
+            }
+            prevPathPkts[key] = pkts
         }
+        if (samples.isNotEmpty()) pathGraph.addSamples(samples)
         statsView.text = sb.toString()
     }
 

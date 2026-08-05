@@ -50,6 +50,10 @@ application protocol imposed) over **Multipath QUIC**.
   that fails the summary falls back to the public TrafficStats API
   (wifi vs mobile/rmnet TX since boot).
 - Server: echo toggle; both: live per-path stats (SRTT, cwnd, bytes, loss).
+- **Per-path graph**: below the (compact, auto-scrolling) log pane both apps
+  draw a rolling 60 s line graph of packets sent per second on each tquic
+  path — one line for a single path, one color per path for multipath, with
+  the path 4-tuple as a colored legend.
 
 ## Kotlin ⇄ JNI ⇄ Rust: how the pieces connect
 

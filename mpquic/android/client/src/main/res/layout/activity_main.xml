@@ -198,8 +198,7 @@
     <ScrollView
         android:id="@+id/logScroll"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_height="120dp"
         android:background="#11000000">
 
         <TextView
@@ -209,6 +208,21 @@
             android:fontFamily="monospace"
             android:textSize="10sp"
             android:padding="4dp"
-            android:paddingBottom="32dp" />
+            android:paddingBottom="16dp" />
     </ScrollView>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Per-path packets sent (last 60s)"
+        android:textStyle="bold"
+        android:textSize="11sp"
+        android:paddingTop="6dp" />
+
+    <com.mpquic.core.PathGraphView
+        android:id="@+id/pathGraph"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="0.6"
+        android:background="#11000000" />
 </LinearLayout>
