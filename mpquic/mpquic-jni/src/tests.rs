@@ -83,8 +83,9 @@ fn echo_roundtrip(listen: &str, connect_to: &str, locals: &[&str]) -> String {
             sent = true;
         }
         data_events = all.matches("\"type\":\"data\"").count();
-        // Server received + client received echo.
-        if data_events >= 2 {
+        // Server received + client received echo, and the client emitted its
+        // post-transfer per-path summary.
+        if data_events >= 2 && all.contains("\"type\":\"send_complete\"") {
             break;
         }
     }
@@ -105,6 +106,10 @@ fn echo_roundtrip(listen: &str, connect_to: &str, locals: &[&str]) -> String {
     assert!(
         all.contains("hello-mpquic"),
         "payload preview missing; output:\n{all}"
+    );
+    assert!(
+        all.contains("\"type\":\"send_complete\""),
+        "send_complete summary missing; output:\n{all}"
     );
     all
 }

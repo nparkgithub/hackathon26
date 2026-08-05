@@ -38,6 +38,43 @@ class NetUtilsTest {
     }
 
     @Test
+    fun defaultLocalAddresses_excludesCarrierLocalRmnetV4() {
+        val ifaces = listOf(
+            // 192.x on wlan is a normal home LAN address — keep it.
+            IfaceAddrs("wlan0", listOf("192.168.1.7"), emptyList()),
+            // 192.x on rmnet_data is the CLAT/NAT-internal address — drop it.
+            IfaceAddrs("rmnet_data0", listOf("192.0.0.2"), listOf("2607:fb90::2")),
+        )
+        assertEquals(
+            listOf("192.168.1.7", "2607:fb90::2"),
+            NetUtils.defaultLocalAddresses(ifaces),
+        )
+    }
+
+    @Test
+    fun parseIfconfigTx_readsToyboxFormat() {
+        val sample = """
+            |wlan0     Link encap:UNSPEC
+            |          inet addr:10.73.51.71  Bcast:10.73.51.255  Mask:255.255.255.0
+            |          UP BROADCAST RUNNING MULTICAST  MTU:1500  Metric:1
+            |          RX packets:1000 errors:0 dropped:0 overruns:0 frame:0
+            |          TX packets:900 errors:0 dropped:0 overruns:0 carrier:0
+            |          RX bytes:123456 TX bytes:654321
+            |
+            |rmnet_data0 Link encap:UNSPEC
+            |          inet addr:192.0.0.2  Mask:255.255.255.248
+            |          RX bytes:111 TX bytes:2222
+            |
+            |lo        Link encap:Local Loopback
+            |          RX bytes:5 TX bytes:5
+        """.trimMargin()
+        assertEquals(
+            listOf("wlan0" to 654321L, "rmnet_data0" to 2222L),
+            NetUtils.parseIfconfigTx(sample),
+        )
+    }
+
+    @Test
     fun defaultLocalAddresses_deduplicates() {
         val ifaces = listOf(
             IfaceAddrs("wlan0", listOf("1.2.3.4"), emptyList()),

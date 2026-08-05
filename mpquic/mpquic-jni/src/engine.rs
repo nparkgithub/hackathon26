@@ -58,6 +58,12 @@ struct Shared {
     pending: HashMap<(u64, u64), Vec<u8>>,
     total_rx: u64,
     total_tx: u64,
+    /// In-flight app transfer tracking for the send_complete summary:
+    /// payload bytes queued, per-path sent_bytes snapshot at transfer start,
+    /// and when the pending buffers fully drained.
+    transfer_queued: u64,
+    transfer_base: Option<HashMap<(SocketAddr, SocketAddr), u64>>,
+    transfer_drained_at: Option<Instant>,
 }
 
 struct Handler {
@@ -297,6 +303,65 @@ fn emit_stats(endpoint: &mut Endpoint, shared: &Rc<RefCell<Shared>>) {
     }
 }
 
+/// Once a transfer's pending buffers have fully drained and stayed drained
+/// for a settle period (letting the last packets hit the wire), report how
+/// many bytes each path carried since the transfer started.
+fn maybe_emit_send_summary(endpoint: &mut Endpoint, shared: &Rc<RefCell<Shared>>) {
+    const SETTLE: Duration = Duration::from_millis(600);
+    let now = Instant::now();
+    {
+        let mut s = shared.borrow_mut();
+        if s.transfer_base.is_none() {
+            return;
+        }
+        if !s.pending.is_empty() {
+            s.transfer_drained_at = None;
+            return;
+        }
+        match s.transfer_drained_at {
+            None => {
+                s.transfer_drained_at = Some(now);
+                return;
+            }
+            Some(t) if now.duration_since(t) < SETTLE => return,
+            Some(_) => {}
+        }
+    }
+    let (conns, queued, base) = {
+        let mut s = shared.borrow_mut();
+        let base = s.transfer_base.take().unwrap_or_default();
+        let queued = s.transfer_queued;
+        s.transfer_queued = 0;
+        s.transfer_drained_at = None;
+        (s.conns.clone(), queued, base)
+    };
+    let mut paths = Vec::new();
+    for index in conns {
+        if let Some(conn) = endpoint.conn_get_mut(index) {
+            let tuples: Vec<_> = conn.paths_iter().collect();
+            for t in tuples {
+                if let Ok(ps) = conn.get_path_stats(t.local, t.remote) {
+                    let before = base.get(&(t.local, t.remote)).copied().unwrap_or(0);
+                    paths.push(json!({
+                        "local": t.local.to_string(),
+                        "remote": t.remote.to_string(),
+                        "bytes_sent": ps.sent_bytes.saturating_sub(before),
+                        "total_sent_bytes": ps.sent_bytes,
+                    }));
+                }
+            }
+        }
+    }
+    output::push_event(
+        json!({
+            "type": "send_complete",
+            "bytes_queued": queued,
+            "paths": paths,
+        })
+        .to_string(),
+    );
+}
+
 fn parse_addr(s: &str) -> Result<SocketAddr, String> {
     s.parse::<SocketAddr>()
         .map_err(|e| format!("invalid address '{s}': {e}"))
@@ -427,6 +492,29 @@ fn run_inner(
                         );
                         continue;
                     }
+                    // Snapshot per-path counters at transfer start so the
+                    // send_complete summary can report this transfer's share.
+                    {
+                        let mut base = HashMap::new();
+                        if shared.borrow().transfer_base.is_none() {
+                            for &index in &conns {
+                                if let Some(conn) = endpoint.conn_get_mut(index) {
+                                    let tuples: Vec<_> = conn.paths_iter().collect();
+                                    for t in tuples {
+                                        if let Ok(ps) = conn.get_path_stats(t.local, t.remote) {
+                                            base.insert((t.local, t.remote), ps.sent_bytes);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        let mut s = shared.borrow_mut();
+                        if s.transfer_base.is_none() {
+                            s.transfer_base = Some(base);
+                        }
+                        s.transfer_queued += data.len() as u64;
+                        s.transfer_drained_at = None;
+                    }
                     for index in conns {
                         if let Some(conn) = endpoint.conn_get_mut(index) {
                             let mut s = shared.borrow_mut();
@@ -502,6 +590,8 @@ fn run_inner(
         }
 
         endpoint.on_timeout(Instant::now());
+
+        maybe_emit_send_summary(&mut endpoint, &shared);
 
         if last_stats.elapsed() >= STATS_INTERVAL {
             emit_stats(&mut endpoint, &shared);

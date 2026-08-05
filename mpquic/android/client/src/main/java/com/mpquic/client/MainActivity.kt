@@ -10,6 +10,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.mpquic.core.EngineController
+import com.mpquic.core.FileLogger
 import com.mpquic.core.IfaceAddrs
 import com.mpquic.core.NetUtils
 import com.mpquic.core.NetworkMonitor
@@ -25,6 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var localAddrs: EditText
     private lateinit var autoAddrSwitch: SwitchMaterial
     private lateinit var ifaceStatus: TextView
+    private var fileLogger: FileLogger? = null
     private val logBuffer = StringBuilder()
     private var connected = false
 
@@ -52,15 +54,17 @@ class MainActivity : AppCompatActivity() {
         autoAddrSwitch = findViewById(R.id.autoAddrSwitch)
         ifaceStatus = findViewById(R.id.ifaceStatus)
 
+        fileLogger = FileLogger(this, "client")
+        findViewById<TextView>(R.id.logLabel).text = "Log — file: ${fileLogger?.file}"
+        appendLog("I: log file: ${fileLogger?.file}")
+
         // Auto-fill the multipath local addresses from wlan*/rmnet_data* and
-        // keep them fresh as networks come and go; flip the switch off for
-        // manual entry.
+        // keep them fresh as networks come and go. The field itself stays
+        // editable; the switch only controls whether auto updates overwrite it.
         monitor = NetworkMonitor(this, ::onIfacesChanged)
         autoAddrSwitch.setOnCheckedChangeListener { _, checked ->
-            localAddrs.isEnabled = !checked
             if (checked) monitor.refresh()
         }
-        localAddrs.isEnabled = !autoAddrSwitch.isChecked
         monitor.start()
 
         engine = EngineController(onLog = ::appendLog, onEvent = ::handleEvent)
@@ -161,6 +165,7 @@ class MainActivity : AppCompatActivity() {
                 "I: recv ${ev.optInt("bytes")} B on stream ${ev.optLong("stream")}" +
                     " \"${ev.optString("preview")}\""
             )
+            "send_complete" -> renderSendSummary(ev)
             "stats" -> renderStats(ev)
             "error" -> appendLog("E: ${ev.optString("message")}")
             "disconnected" -> {
@@ -178,6 +183,25 @@ class MainActivity : AppCompatActivity() {
             "stopped" -> appendLog("I: engine stopped")
             else -> appendLog("D: event $ev")
         }
+    }
+
+    /**
+     * Post-transfer summary: payload size, bytes each QUIC path carried
+     * (QUIC packets incl. protocol overhead), and interface-level TX
+     * counters as reported by `ifconfig`.
+     */
+    private fun renderSendSummary(ev: JSONObject) {
+        appendLog("I: == send complete: ${ev.optLong("bytes_queued")} B payload ==")
+        val paths = ev.optJSONArray("paths") ?: JSONArray()
+        for (i in 0 until paths.length()) {
+            val p = paths.getJSONObject(i)
+            appendLog(
+                "I:   path ${p.optString("local")} -> ${p.optString("remote")}: " +
+                    "${p.optLong("bytes_sent")} B this send" +
+                    " (total ${p.optLong("total_sent_bytes")} B)"
+            )
+        }
+        appendLog("I:   ${NetUtils.ifaceTxSummary()}")
     }
 
     private fun renderStats(ev: JSONObject) {
@@ -202,17 +226,24 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun appendLog(line: String) {
+        fileLogger?.write(line)
         logBuffer.append(line).append('\n')
         if (logBuffer.length > 60_000) {
             logBuffer.delete(0, logBuffer.length - 50_000)
         }
+        // Stick to the bottom only if the user is already there, so manual
+        // scrolling through history isn't yanked back down on every line.
+        val stick = !logScroll.canScrollVertically(1)
         logView.text = logBuffer
-        logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        if (stick) {
+            logScroll.post { logScroll.scrollTo(0, logView.bottom) }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         monitor.stop()
         engine.stop()
+        fileLogger?.close()
     }
 }

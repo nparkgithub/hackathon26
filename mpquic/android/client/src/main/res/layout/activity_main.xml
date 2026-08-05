@@ -187,10 +187,12 @@
     </ScrollView>
 
     <TextView
-        android:layout_width="wrap_content"
+        android:id="@+id/logLabel"
+        android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="Log"
         android:textStyle="bold"
+        android:textSize="11sp"
         android:paddingTop="6dp" />
 
     <ScrollView
@@ -206,6 +208,7 @@
             android:layout_height="wrap_content"
             android:fontFamily="monospace"
             android:textSize="10sp"
-            android:padding="4dp" />
+            android:padding="4dp"
+            android:paddingBottom="32dp" />
     </ScrollView>
 </LinearLayout>

@@ -10,6 +10,7 @@ import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import com.google.android.material.switchmaterial.SwitchMaterial
 import com.mpquic.core.EngineController
+import com.mpquic.core.FileLogger
 import com.mpquic.core.NetUtils
 import org.json.JSONArray
 import org.json.JSONObject
@@ -19,6 +20,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var logView: TextView
     private lateinit var logScroll: ScrollView
     private lateinit var statsView: TextView
+    private var fileLogger: FileLogger? = null
     private val logBuffer = StringBuilder()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -40,6 +42,10 @@ class MainActivity : AppCompatActivity() {
             "Device IPs: " + NetUtils.deviceAddresses()
                 .joinToString(", ") { (nif, ip) -> "$nif=$ip" }
                 .ifEmpty { "none" }
+
+        fileLogger = FileLogger(this, "server")
+        findViewById<TextView>(R.id.logLabel).text = "Log — file: ${fileLogger?.file}"
+        appendLog("I: log file: ${fileLogger?.file}")
 
         engine = EngineController(onLog = ::appendLog, onEvent = ::handleEvent)
 
@@ -124,16 +130,23 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun appendLog(line: String) {
+        fileLogger?.write(line)
         logBuffer.append(line).append('\n')
         if (logBuffer.length > 60_000) {
             logBuffer.delete(0, logBuffer.length - 50_000)
         }
+        // Stick to the bottom only if the user is already there, so manual
+        // scrolling through history isn't yanked back down on every line.
+        val stick = !logScroll.canScrollVertically(1)
         logView.text = logBuffer
-        logScroll.post { logScroll.fullScroll(ScrollView.FOCUS_DOWN) }
+        if (stick) {
+            logScroll.post { logScroll.scrollTo(0, logView.bottom) }
+        }
     }
 
     override fun onDestroy() {
         super.onDestroy()
         engine.stop()
+        fileLogger?.close()
     }
 }

@@ -72,7 +72,19 @@ object NetUtils {
 
     /** Flatten [ifaces] into the local_addresses config list (v4 then v6 per iface). */
     fun defaultLocalAddresses(ifaces: List<IfaceAddrs>): List<String> =
-        ifaces.flatMap { it.all }.distinct()
+        ifaces
+            .flatMap { iface -> iface.all.filterNot { isCarrierLocal(iface.name, it) } }
+            .distinct()
+
+    /**
+     * Carrier-internal cellular addresses — 192.x.x.x on rmnet_data* (e.g.
+     * the 464xlat CLAT address 192.0.0.2) — are NATed and not usable as a
+     * multipath source toward external servers, so they are left out of the
+     * default fill. They still appear in the interface status line and can
+     * be typed into the (always editable) address field manually.
+     */
+    fun isCarrierLocal(ifaceName: String, ip: String): Boolean =
+        ifaceName.startsWith("rmnet_data") && ip.startsWith("192.")
 
     /**
      * Whether an address can serve as a QUIC path source: loopback,
@@ -85,6 +97,62 @@ object NetUtils {
 
     /** Drop the IPv6 zone id ("fe80::1%wlan0" -> "fe80::1"). */
     fun stripScope(host: String): String = host.substringBefore('%')
+
+    /**
+     * TX byte counters per interface as reported by the `ifconfig` binary
+     * (per user request — no /sys//proc kernel-tree reads), restricted to
+     * interfaces matching [prefixes]. Empty on any failure.
+     */
+    fun ifconfigTx(prefixes: List<String> = DEFAULT_IFACE_PREFIXES): List<Pair<String, Long>> =
+        try {
+            val proc = Runtime.getRuntime().exec("ifconfig")
+            val out = proc.inputStream.bufferedReader().readText()
+            proc.waitFor()
+            parseIfconfigTx(out, prefixes)
+        } catch (_: Exception) {
+            emptyList()
+        }
+
+    /** Parse toybox `ifconfig` output into (interface, TX bytes) pairs. */
+    fun parseIfconfigTx(
+        output: String,
+        prefixes: List<String> = DEFAULT_IFACE_PREFIXES,
+    ): List<Pair<String, Long>> {
+        val result = mutableListOf<Pair<String, Long>>()
+        var current: String? = null
+        for (line in output.lines()) {
+            if (line.isNotEmpty() && !line[0].isWhitespace()) {
+                current = line.substringBefore(' ').trim().removeSuffix(":")
+            }
+            val m = TX_BYTES_RE.find(line) ?: continue
+            val iface = current ?: continue
+            if (prefixes.any { iface.startsWith(it) }) {
+                result.add(iface to m.groupValues[1].toLong())
+            }
+        }
+        return result
+    }
+
+    private val TX_BYTES_RE = Regex("""TX bytes:(\d+)""")
+
+    /**
+     * One-line per-interface TX summary. Tries `ifconfig` first; on modern
+     * Android SELinux denies /proc/net/dev to apps (which ifconfig reads
+     * under the hood), so fall back to the public TrafficStats API:
+     * mobile = all rmnet traffic, wifi = total - mobile.
+     */
+    fun ifaceTxSummary(): String {
+        val tx = ifconfigTx()
+        if (tx.isNotEmpty()) {
+            return "ifconfig TX: " + tx.joinToString(", ") { (n, b) -> "$n=$b B" }
+        }
+        val mobile = android.net.TrafficStats.getMobileTxBytes()
+        val total = android.net.TrafficStats.getTotalTxBytes()
+        if (total <= 0) return "interface TX counters unavailable"
+        val wifi = (total - mobile.coerceAtLeast(0)).coerceAtLeast(0)
+        return "TX since boot (TrafficStats; ifconfig blocked by Android): " +
+            "wifi=$wifi B, mobile/rmnet=${mobile.coerceAtLeast(0)} B"
+    }
 
     /** Copy a bundled asset to filesDir and return its absolute path. */
     fun assetToFile(context: Context, assetName: String): String {

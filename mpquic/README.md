@@ -24,8 +24,10 @@ application protocol imposed) over **Multipath QUIC**.
   becomes the initial path). A `NetworkMonitor` built on
   `ConnectivityManager` keeps the list fresh as networks come and go, and
   actively *requests* the cellular network so Android keeps `rmnet_data`
-  configured while Wi-Fi is the default route. Flip the "Auto-fill" switch
-  off to type addresses manually.
+  configured while Wi-Fi is the default route. Carrier-internal addresses
+  (192.x.x.x on rmnet_data*, e.g. the 464xlat CLAT address) are excluded
+  from the default fill. The field is always editable — the switch only
+  controls whether auto updates keep overwriting it.
 - **IPv4 + IPv6**: tquic paths are address-family agnostic; enter
   `[2001:db8::1]:4433`-style server addresses for IPv6 (server can listen on
   `[::]:4433`, which also accepts IPv4 as v4-mapped). Because one UDP socket
@@ -35,6 +37,18 @@ application protocol imposed) over **Multipath QUIC**.
 - **Multipath scheduler**: `minrtt`, `redundant`, `roundrobin`.
 - **Congestion control**: `bbr`, `cubic`, `bbr3`, `copa`.
 - **Log level**: `off` … `trace` (tquic's own logs streamed into the app UI).
+- **Log files**: every log line is also appended to
+  `/sdcard/mpquic/client.log` / `server.log` when the app has the
+  "All files access" grant (`adb shell appops set com.mpquic.client
+  MANAGE_EXTERNAL_STORAGE allow`, same for the server); otherwise to
+  `/sdcard/Android/data/<pkg>/files/mpquic/`. The actual path is shown
+  above the log pane and printed as the first log line.
+- **Send summary (client)**: once a transfer finishes, the log shows the
+  payload size, the bytes each QUIC path carried, and per-interface TX
+  counters read from `ifconfig` (wlan*/rmnet_data*). Note: modern Android
+  denies /proc/net/dev to apps and `ifconfig` reads it internally, so when
+  that fails the summary falls back to the public TrafficStats API
+  (wifi vs mobile/rmnet TX since boot).
 - Server: echo toggle; both: live per-path stats (SRTT, cwnd, bytes, loss).
 
 ## Kotlin ⇄ JNI ⇄ Rust: how the pieces connect
