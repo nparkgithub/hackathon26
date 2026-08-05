@@ -1,0 +1,8 @@
+[toolchain]
+# Must match tquic-jni's pin (see phone/shared/koog/http-client/http-client-tquic/native/tquic-jni/rust-toolchain.toml)
+# so both crates build against the same tquic 1.6.0 compatible toolchain.
+# Unlike that crate, no `targets` line is needed here: this binary is built
+# for whatever host it runs `cargo build` on (the Ubuntu x86_64 server
+# itself, or an x86_64 chroot under qemu-user-static) -- never cross-compiled
+# via a `--target` flag, so no extra rustup target needs to be pre-added.
+channel = "1.90.0"
