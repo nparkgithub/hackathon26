@@ -1,0 +1,4 @@
+[submodule "VideoShowCase"]
+	path = VideoShowCase
+	url = git@github.com:sukoonsarin/VideoShowCase.git
+	branch = hackathon26-arfood

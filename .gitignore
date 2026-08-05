@@ -1,0 +1,6 @@
+
+# macOS
+.DS_Store
+
+# Device firmware pulled off the glasses for rollback; not needed in the repo
+scripts/vendor_audio_backup_*/
