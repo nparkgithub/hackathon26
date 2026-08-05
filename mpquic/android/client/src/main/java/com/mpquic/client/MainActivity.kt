@@ -15,6 +15,7 @@ import com.mpquic.core.IfaceAddrs
 import com.mpquic.core.NetUtils
 import com.mpquic.core.NetworkMonitor
 import com.mpquic.core.PathGraphView
+import com.mpquic.core.UdpIngest
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -32,6 +33,10 @@ class MainActivity : AppCompatActivity() {
     private val prevPathPkts = mutableMapOf<String, Long>()
     private val ifaceByIp = mutableMapOf<String, String>()
     private val logBuffer = StringBuilder()
+    private var udpIngest: UdpIngest? = null
+
+    // Read from the UDP receive thread, written on the UI thread.
+    @Volatile
     private var connected = false
 
     /** Interface owning the local end of a path ("10.73.51.51:39696" -> "wlan0"). */
@@ -54,7 +59,11 @@ class MainActivity : AppCompatActivity() {
         setSpinner(mpAlgo, listOf("minrtt", "redundant", "roundrobin"), 0)
         setSpinner(ccAlgo, listOf("bbr", "cubic", "bbr3", "copa"), 0)
         setSpinner(logLevel, listOf("off", "error", "warn", "info", "debug", "trace"), 3)
-        setSpinner(bulkSize, listOf("1 MB", "10 MB", "25 MB", "30 MB", "40 MB", "50 MB", "100 MB"), 0)
+        setSpinner(
+            bulkSize,
+            listOf("1 MB", "2 MB", "5 MB", "10 MB", "25 MB", "30 MB", "40 MB", "50 MB", "100 MB"),
+            0
+        )
 
         findViewById<TextView>(R.id.deviceIps).text =
             "Device IPs: " + NetUtils.deviceAddresses()
@@ -132,6 +141,48 @@ class MainActivity : AppCompatActivity() {
             if (text.isNotEmpty()) {
                 engine.send(text.toByteArray())
                 appendLog("I: sent ${text.toByteArray().size} bytes")
+            }
+        }
+
+        // Plain-UDP payload intake: datagrams arriving on this local port are
+        // forwarded into the QUIC connection as opaque payload.
+        val udpBtn = findViewById<Button>(R.id.udpBtn)
+        val udpPort = findViewById<EditText>(R.id.udpPort)
+        udpBtn.setOnClickListener {
+            val running = udpIngest
+            if (running == null) {
+                val port = udpPort.text.toString().trim().toIntOrNull()
+                if (port == null || port !in 1..65535) {
+                    appendLog("E: invalid UDP port '${udpPort.text}'")
+                    return@setOnClickListener
+                }
+                val ingest = UdpIngest(
+                    onData = { data, from ->
+                        // Receive-thread context: nativeSend is thread-safe.
+                        if (connected && engine.send(data)) {
+                            runOnUiThread {
+                                appendLog("I: udp-in ${data.size} B from $from -> QUIC")
+                            }
+                        } else {
+                            runOnUiThread {
+                                appendLog("W: udp-in ${data.size} B from $from dropped (not connected)")
+                            }
+                        }
+                    },
+                    onLog = { line -> runOnUiThread { appendLog(line) } },
+                )
+                if (ingest.start(port)) {
+                    udpIngest = ingest
+                    udpPort.isEnabled = false
+                    udpBtn.text = "Stop UDP RX"
+                    appendLog("I: UDP ingest listening on 0.0.0.0:$port -> QUIC")
+                }
+            } else {
+                running.stop()
+                udpIngest = null
+                udpPort.isEnabled = true
+                udpBtn.text = "Start UDP RX"
+                appendLog("I: UDP ingest stopped")
             }
         }
 
@@ -271,6 +322,8 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        udpIngest?.stop()
+        udpIngest = null
         monitor.stop()
         engine.stop()
         fileLogger?.close()

@@ -190,6 +190,28 @@
                     android:text="Send test payload" />
             </LinearLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/udpPort"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:hint="UDP in port"
+                    android:inputType="number"
+                    android:text="47474" />
+
+                <Button
+                    android:id="@+id/udpBtn"
+                    android:layout_width="0dp"
+                    android:layout_weight="2"
+                    android:layout_height="wrap_content"
+                    android:text="Start UDP RX" />
+            </LinearLayout>
+
             <TextView
                 android:id="@+id/stats"
                 android:layout_width="match_parent"

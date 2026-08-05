@@ -190,7 +190,11 @@ while the Ninja generator emits them in `build/`. Patched to check
    IPv4 and IPv6 — the live "Path interfaces" line shows what was found.
    Turn the auto-fill switch off to edit the list manually. Choose scheduler
    (`redundant` duplicates every packet on all paths), Connect, then Send
-   text or a test payload (1–100 MB, selectable). Stats show per-path SRTT/cwnd/bytes so
+   text or a test payload (1/2/5/10/25/30/40/50/100 MB, selectable), or
+   start **UDP RX** (default port 47474, chosen to be uncommon) and pipe any
+   external UDP datagrams into the QUIC connection — each datagram received
+   on that local port is forwarded to the server as opaque payload.
+   Stats show per-path SRTT/cwnd/bytes so
    you can watch traffic split across paths.
 
 Android notes: the client's `NetworkMonitor` already holds the cellular
