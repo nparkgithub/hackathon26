@@ -194,6 +194,8 @@ while the Ninja generator emits them in `build/`. Patched to check
    start **UDP RX** (default port 47474, chosen to be uncommon) and pipe any
    external UDP datagrams into the QUIC connection — each datagram received
    on that local port is forwarded to the server as opaque payload.
+   `tools/udp_sender.py` drives it from a desktop on the same network:
+   `python tools/udp_sender.py <phone-ip> -c 40 -s 1200 -i 0.25`.
    Stats show per-path SRTT/cwnd/bytes so
    you can watch traffic split across paths.
 
