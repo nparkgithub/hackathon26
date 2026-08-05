@@ -197,7 +197,7 @@ class MainActivity : AppCompatActivity() {
             val p = paths.getJSONObject(i)
             appendLog(
                 "I:   path ${p.optString("local")} -> ${p.optString("remote")}: " +
-                    "${p.optLong("bytes_sent")} B this send" +
+                    "${p.optLong("bytes_sent")} B / ${p.optLong("pkts_sent")} pkts this send" +
                     " (total ${p.optLong("total_sent_bytes")} B)"
             )
         }

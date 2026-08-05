@@ -132,6 +132,77 @@ fn end_to_end_echo_ipv6() {
     echo_roundtrip("[::1]:14434", "[::1]:14434", &["::1"]);
 }
 
+/// With two working paths (two loopback sockets) and the redundant
+/// scheduler, the send_complete summary must report real bytes on *each*
+/// tquic path — this is the per-path accounting the apps display.
+#[test]
+fn two_path_redundant_reports_bytes_on_each_path() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    output::init_logger("info");
+    output::drain();
+
+    let (_server_tx, server_running) = spawn_server("127.0.0.1:14436");
+    std::thread::sleep(Duration::from_millis(500));
+    let (client_tx, client_running) = spawn_engine(serde_json::json!({
+        "role": "client",
+        "connect_to": "127.0.0.1:14436",
+        // Two sockets on the same IP -> two distinct 4-tuples, both valid.
+        "local_addresses": ["127.0.0.1", "127.0.0.1"],
+        "enable_multipath": true,
+        "multipath_algorithm": "redundant",
+        "congestion_control": "bbr",
+        "log_level": "info",
+    }));
+
+    const PAYLOAD: usize = 200_000;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut all = String::new();
+    let mut sent = false;
+    let mut summary = None;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(300));
+        all.push_str(&output::drain());
+        all.push('\u{1E}');
+        // Wait for the extra path before sending so the redundant scheduler
+        // has both paths available.
+        if !sent
+            && all.contains("\"type\":\"connected\"")
+            && all.contains("\"type\":\"path_added\"")
+        {
+            client_tx.send(Cmd::Send(vec![0xAB; PAYLOAD])).unwrap();
+            sent = true;
+        }
+        if sent {
+            // Client summary first; the server's echo summary comes later.
+            if let Some(rec) = all
+                .split('\u{1E}')
+                .find(|r| r.contains("\"type\":\"send_complete\""))
+            {
+                let v: serde_json::Value =
+                    serde_json::from_str(rec.trim_start_matches("E|")).unwrap();
+                summary = Some(v);
+                break;
+            }
+        }
+    }
+
+    client_running.store(false, Ordering::Relaxed);
+    server_running.store(false, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(300));
+
+    let summary = summary.unwrap_or_else(|| panic!("no send_complete; output:\n{all}"));
+    let paths = summary["paths"].as_array().unwrap();
+    assert!(paths.len() >= 2, "expected 2 paths, got {paths:?}");
+    for p in paths {
+        let bytes = p["bytes_sent"].as_u64().unwrap();
+        let pkts = p["pkts_sent"].as_u64().unwrap();
+        assert!(
+            bytes as usize >= PAYLOAD / 2 && pkts > 0,
+            "path carried too little ({bytes} B / {pkts} pkts): {p}"
+        );
+    }
+}
+
 /// A mixed v4+v6 local address list (as produced by the wlan/rmnet auto-fill)
 /// must still connect to a v4 server: the v6 entry is skipped with a
 /// `path_skipped` event instead of failing the whole engine.

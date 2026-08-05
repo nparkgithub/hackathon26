@@ -100,12 +100,28 @@ class MainActivity : AppCompatActivity() {
                 "I: recv ${ev.optInt("bytes")} B on stream ${ev.optLong("stream")}" +
                     " \"${ev.optString("preview")}\""
             )
+            "send_complete" -> renderSendSummary(ev)
             "stats" -> renderStats(ev)
             "error" -> appendLog("E: ${ev.optString("message")}")
             "disconnected" -> appendLog("I: client disconnected")
             "stopped" -> appendLog("I: engine stopped")
             else -> appendLog("D: event $ev")
         }
+    }
+
+    /** Per-path summary of the echo the server just finished sending back. */
+    private fun renderSendSummary(ev: JSONObject) {
+        appendLog("I: == echo complete: ${ev.optLong("bytes_queued")} B payload ==")
+        val paths = ev.optJSONArray("paths") ?: JSONArray()
+        for (i in 0 until paths.length()) {
+            val p = paths.getJSONObject(i)
+            appendLog(
+                "I:   path ${p.optString("local")} -> ${p.optString("remote")}: " +
+                    "${p.optLong("bytes_sent")} B / ${p.optLong("pkts_sent")} pkts this send" +
+                    " (total ${p.optLong("total_sent_bytes")} B)"
+            )
+        }
+        appendLog("I:   ${NetUtils.ifaceTxSummary()}")
     }
 
     private fun renderStats(ev: JSONObject) {

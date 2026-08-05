@@ -59,11 +59,27 @@ struct Shared {
     total_rx: u64,
     total_tx: u64,
     /// In-flight app transfer tracking for the send_complete summary:
-    /// payload bytes queued, per-path sent_bytes snapshot at transfer start,
-    /// and when the pending buffers fully drained.
+    /// payload bytes queued, per-path (sent_bytes, sent_pkts) snapshot at
+    /// transfer start, and when the pending buffers fully drained. Client
+    /// transfers start on Cmd::Send; server transfers start on echo data.
     transfer_queued: u64,
-    transfer_base: Option<HashMap<(SocketAddr, SocketAddr), u64>>,
+    transfer_base: Option<HashMap<(SocketAddr, SocketAddr), (u64, u64)>>,
     transfer_drained_at: Option<Instant>,
+}
+
+/// tquic's own per-path counters — the authoritative "how much went over
+/// each path" numbers (what its logs are derived from).
+fn snapshot_path_counters(
+    conn: &mut Connection,
+) -> HashMap<(SocketAddr, SocketAddr), (u64, u64)> {
+    let mut map = HashMap::new();
+    let tuples: Vec<_> = conn.paths_iter().collect();
+    for t in tuples {
+        if let Ok(ps) = conn.get_path_stats(t.local, t.remote) {
+            map.insert((t.local, t.remote), (ps.sent_bytes, ps.sent_count));
+        }
+    }
+    map
 }
 
 struct Handler {
@@ -193,6 +209,14 @@ impl TransportHandler for Handler {
 
                         // Server echoes payload back on the same stream.
                         if shared.is_server && shared.echo {
+                            // The echo is the server's "transfer" — track it
+                            // so it gets a per-path send_complete summary too.
+                            if shared.transfer_base.is_none() {
+                                shared.transfer_base = Some(snapshot_path_counters(conn));
+                            }
+                            shared.transfer_queued += n as u64;
+                            shared.transfer_drained_at = None;
+
                             let index = conn.index().unwrap_or(u64::MAX);
                             let key = (index, stream_id);
                             shared
@@ -341,11 +365,13 @@ fn maybe_emit_send_summary(endpoint: &mut Endpoint, shared: &Rc<RefCell<Shared>>
             let tuples: Vec<_> = conn.paths_iter().collect();
             for t in tuples {
                 if let Ok(ps) = conn.get_path_stats(t.local, t.remote) {
-                    let before = base.get(&(t.local, t.remote)).copied().unwrap_or(0);
+                    let (bytes0, pkts0) =
+                        base.get(&(t.local, t.remote)).copied().unwrap_or((0, 0));
                     paths.push(json!({
                         "local": t.local.to_string(),
                         "remote": t.remote.to_string(),
-                        "bytes_sent": ps.sent_bytes.saturating_sub(before),
+                        "bytes_sent": ps.sent_bytes.saturating_sub(bytes0),
+                        "pkts_sent": ps.sent_count.saturating_sub(pkts0),
                         "total_sent_bytes": ps.sent_bytes,
                     }));
                 }
@@ -499,12 +525,7 @@ fn run_inner(
                         if shared.borrow().transfer_base.is_none() {
                             for &index in &conns {
                                 if let Some(conn) = endpoint.conn_get_mut(index) {
-                                    let tuples: Vec<_> = conn.paths_iter().collect();
-                                    for t in tuples {
-                                        if let Ok(ps) = conn.get_path_stats(t.local, t.remote) {
-                                            base.insert((t.local, t.remote), ps.sent_bytes);
-                                        }
-                                    }
+                                    base.extend(snapshot_path_counters(conn));
                                 }
                             }
                         }
