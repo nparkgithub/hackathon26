@@ -194,3 +194,20 @@ parsed and carried; amber renders; token never reaches `speak` or `display`.
 **Still needs a real food item:** `UNSAFE` → red and `SAFE` → white. Both are the same code path as
 the verified amber case, differing only in the string the model returns, but neither has been seen
 end to end.
+
+## Correction — the token's real position
+
+The design assumed the model would put `VERDICT: SAFE` on its own line, as instructed. It does not.
+Observed across repeated device runs, it appends the token to the end of the final sentence:
+
+```
+...based on what is observable here. VERDICT: SAFE
+```
+
+`parseVerdict` therefore removes the **token**, wherever it appears, rather than the line
+containing it. Removing the line would delete the entire answer, since the whole response is
+usually one paragraph.
+
+A verdict written as prose instead — "so the verdict is safe" — is read but deliberately left in
+place: cutting words out of a sentence would mangle it, and the phrase reads fine aloud. The two
+are told apart by the separator, `VERDICT: SAFE` versus `verdict is safe`.
