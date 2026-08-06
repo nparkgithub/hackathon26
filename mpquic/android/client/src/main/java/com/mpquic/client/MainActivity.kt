@@ -99,6 +99,15 @@ class MainActivity : AppCompatActivity() {
             val cfg = JSONObject().apply {
                 put("role", "client")
                 put("connect_to", findViewById<EditText>(R.id.serverAddr).text.toString().trim())
+                // Second remote, opposite address family -- lets a local
+                // path whose only real address is the other family (e.g.
+                // rmnet, often IPv6-only) join the same connection instead
+                // of being dropped for address-family mismatch. Optional --
+                // omitted entirely when blank, so single-remote behavior is
+                // unchanged unless this field is actually filled in.
+                findViewById<EditText>(R.id.serverAddrAlt).text.toString().trim()
+                    .takeIf { it.isNotEmpty() }
+                    ?.let { put("connect_to_alt", it) }
                 put(
                     "local_addresses",
                     JSONArray(

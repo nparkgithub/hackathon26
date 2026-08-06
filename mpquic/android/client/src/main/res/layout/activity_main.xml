@@ -39,6 +39,13 @@
                 android:inputType="text"
                 android:text="10.0.2.2:4433" />
 
+            <EditText
+                android:id="@+id/serverAddrAlt"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:hint="Server address, alt family (ip:port, optional)"
+                android:inputType="text" />
+
             <com.google.android.material.switchmaterial.SwitchMaterial
                 android:id="@+id/autoAddrSwitch"
                 android:layout_width="match_parent"

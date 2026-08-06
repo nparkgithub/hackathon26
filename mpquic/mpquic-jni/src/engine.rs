@@ -84,6 +84,9 @@ struct Shared {
     forward_url: Option<String>,
     forward_timeout: Duration,
     remote: Option<SocketAddr>,
+    /// Second remote address (opposite family), from `connect_to_alt`. See
+    /// `remote_for`.
+    remote_alt: Option<SocketAddr>,
     /// Tunnel streams that carry relayed HTTP/3 traffic, and the partially
     /// received frame bytes for each.
     relay_buf: HashMap<(u64, u64), Vec<u8>>,
@@ -91,8 +94,11 @@ struct Shared {
     relay_routes: HashMap<(u64, u64), RelayRoute>,
     /// Frames fully received on the tunnel, drained by the poll loop.
     relay_inbox: Vec<(u64, u64, crate::h3relay::RelayFrame)>,
-    /// Extra client local addresses to add as paths after handshake.
-    extra_paths: Vec<SocketAddr>,
+    /// Extra client local addresses to add as paths after handshake, each
+    /// paired with the remote address matching its address family (see
+    /// `remote_for`) -- not always the same `remote` when `remote_alt` is
+    /// in play.
+    extra_paths: Vec<(SocketAddr, SocketAddr)>,
     /// Established connection indexes.
     conns: Vec<u64>,
     /// Outgoing stream per connection index.
@@ -174,8 +180,8 @@ impl TransportHandler for Handler {
 
         // Client: add the extra multipath paths now that the handshake is done.
         if !shared.is_server {
-            if let Some(remote) = shared.remote {
-                for local in shared.extra_paths.clone() {
+            if shared.remote.is_some() {
+                for (local, remote) in shared.extra_paths.clone() {
                     match conn.add_path(local, remote) {
                         Ok(_) => {
                             info!("{} added path {} -> {}", conn.trace_id(), local, remote);
@@ -530,6 +536,21 @@ fn parse_addr(s: &str) -> Result<SocketAddr, String> {
         .map_err(|e| format!("invalid address '{s}': {e}"))
 }
 
+/// Whichever of `remote`/`remote_alt` shares `ip`'s address family, if any.
+/// `remote_alt` (from `connect_to_alt`) exists so a local path whose only
+/// real address is the *other* family -- e.g. a phone's IPv6-only rmnet
+/// interface, dialing the same logical server as an IPv4 wlan0 path -- isn't
+/// dropped just because it doesn't match the primary remote.
+fn remote_for(ip: IpAddr, remote: SocketAddr, remote_alt: Option<SocketAddr>) -> Option<SocketAddr> {
+    if ip.is_ipv4() == remote.is_ipv4() {
+        Some(remote)
+    } else if let Some(alt) = remote_alt {
+        (ip.is_ipv4() == alt.is_ipv4()).then_some(alt)
+    } else {
+        None
+    }
+}
+
 pub fn run(cfg: BridgeConfig, poll: Poll, cmd_rx: Receiver<Cmd>, running: Arc<AtomicBool>) {
     if let Err(e) = run_inner(cfg, poll, cmd_rx, running) {
         error!("engine stopped with error: {e}");
@@ -569,7 +590,8 @@ fn run_inner(
         (sock, None)
     } else {
         let remote = parse_addr(cfg.connect_to.as_deref().ok_or("missing connect_to")?)?;
-        let mut locals: Vec<IpAddr> = cfg
+        let remote_alt = cfg.connect_to_alt.as_deref().map(parse_addr).transpose()?;
+        let locals: Vec<IpAddr> = cfg
             .local_addresses
             .iter()
             .filter(|s| !s.trim().is_empty())
@@ -580,45 +602,58 @@ fn run_inner(
             })
             .collect::<Result<_, _>>()?;
 
-        // A UDP socket bound to one address family cannot reach a remote in
-        // the other, so drop mismatched entries — the UI hands us a mixed
-        // v4+v6 list harvested from the wlan/rmnet_data interfaces.
-        locals.retain(|ip| {
-            let family_ok = ip.is_ipv4() == remote.is_ipv4();
-            if !family_ok {
-                warn!("skipping local address {ip}: address family differs from server {remote}");
-                output::push_event(
-                    json!({
-                        "type": "path_skipped",
-                        "local": ip.to_string(),
-                        "reason": format!("address family differs from server {remote}"),
-                    })
-                    .to_string(),
-                );
-            }
-            family_ok
-        });
+        // Pair each local address with whichever of remote/remote_alt shares
+        // its address family, dropping any that match neither -- the UI
+        // hands us a mixed v4+v6 list harvested from the wlan/rmnet_data
+        // interfaces, and a UDP socket bound to one family can't reach a
+        // remote in the other.
+        let local_remotes: Vec<(IpAddr, SocketAddr)> = locals
+            .into_iter()
+            .filter_map(|ip| match remote_for(ip, remote, remote_alt) {
+                Some(r) => Some((ip, r)),
+                None => {
+                    warn!("skipping local address {ip}: address family differs from server {remote}");
+                    output::push_event(
+                        json!({
+                            "type": "path_skipped",
+                            "local": ip.to_string(),
+                            "reason": format!("address family differs from server {remote}"),
+                        })
+                        .to_string(),
+                    );
+                    None
+                }
+            })
+            .collect();
 
-        let first = match locals.first() {
-            Some(ip) => SocketAddr::new(*ip, 0),
-            None => match remote.is_ipv4() {
-                true => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
-                false => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
-            },
+        // The initial path's remote must match whichever family `first` (its
+        // local address) ends up being -- not always the primary `remote`
+        // when `remote_alt` is in play and local_addresses[0] is the other
+        // family.
+        let (first, initial_remote) = match local_remotes.first() {
+            Some((ip, r)) => (SocketAddr::new(*ip, 0), *r),
+            None => (
+                match remote.is_ipv4() {
+                    true => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 0),
+                    false => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), 0),
+                },
+                remote,
+            ),
         };
         let mut sock =
             QuicSocket::new(&first, registry).map_err(|e| format!("bind {first}: {e}"))?;
 
         let mut extra = Vec::new();
-        for ip in locals.iter().skip(1) {
+        for (ip, r) in local_remotes.iter().skip(1) {
             let addr = sock
                 .add(&SocketAddr::new(*ip, 0), registry)
                 .map_err(|e| format!("bind {ip}: {e}"))?;
-            extra.push(addr);
+            extra.push((addr, *r));
         }
         shared.borrow_mut().extra_paths = extra;
         shared.borrow_mut().remote = Some(remote);
-        (sock, Some(remote))
+        shared.borrow_mut().remote_alt = remote_alt;
+        (sock, Some(initial_remote))
     };
 
     let sock = Rc::new(sock);
