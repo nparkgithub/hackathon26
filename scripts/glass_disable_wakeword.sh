@@ -10,6 +10,9 @@
 # Safe for the capture app: it binds Google's recognizer by explicit ComponentName and never
 # goes through the system assistant, so speech and TTS are unaffected. Verified on-device.
 #
+# DOES NOT SURVIVE A REBOOT. Confirmed on 2026-08-06: after a power cycle both settings were
+# back to RayNeo's service and the wake word was live again. Re-run this after every reboot.
+#
 # Undo with glass_restore_assistant.sh.
 #
 # Usage: ./glass_disable_wakeword.sh
@@ -39,4 +42,4 @@ fi
 
 echo "==> Confirming the capture app's speech + TTS still work"
 echo "    (binds Google by ComponentName, so it does not depend on the assistant)"
-echo "==> Done. Reboot-persistence is untested — re-run after a reboot if the assistant returns."
+echo "==> Done. NOTE: this does not survive a reboot — re-run after every power cycle."
