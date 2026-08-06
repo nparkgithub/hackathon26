@@ -40,8 +40,9 @@ class H3Poster(QuicConnectionProtocol):
         self._done = asyncio.Event()
         self.status: Optional[int] = None
         self.received = 0
+        self.body = bytearray()
 
-    async def post(self, path: str, authority: str, body: bytes, timeout: float):
+    async def post(self, path: str, authority: str, body: bytes, timeout: float, content_type: str = "image/jpeg"):
         stream_id = self._quic.get_next_available_stream_id()
         self._http.send_headers(
             stream_id=stream_id,
@@ -50,7 +51,7 @@ class H3Poster(QuicConnectionProtocol):
                 (b":scheme", b"https"),
                 (b":authority", authority.encode()),
                 (b":path", path.encode()),
-                (b"content-type", b"image/jpeg"),
+                (b"content-type", content_type.encode()),
                 (b"content-length", str(len(body)).encode()),
             ],
         )
@@ -71,6 +72,7 @@ class H3Poster(QuicConnectionProtocol):
                     self._done.set()
             elif isinstance(h3_event, DataReceived):
                 self.received += len(h3_event.data)
+                self.body.extend(h3_event.data)
                 if h3_event.stream_ended:
                     self._done.set()
 
@@ -87,7 +89,7 @@ def make_jpeg(size_mb: int) -> bytes:
     return bytes(body)
 
 
-async def run(host: str, port: int, path: str, body: bytes, timeout: float) -> int:
+async def run(host: str, port: int, path: str, body: bytes, timeout: float, content_type: str) -> int:
     config = QuicConfiguration(is_client=True, alpn_protocols=["h3"])
     config.verify_mode = ssl.CERT_NONE
     # Room for a multi-MB response coming back through the tunnel.
@@ -96,8 +98,8 @@ async def run(host: str, port: int, path: str, body: bytes, timeout: float) -> i
 
     started = time.monotonic()
     async with connect(host, port, configuration=config, create_protocol=H3Poster) as client:
-        print(f"sending {len(body)} B to https://{host}:{port}{path}")
-        await client.post(path, host, body, timeout)
+        print(f"sending {len(body)} B ({content_type}) to https://{host}:{port}{path}")
+        await client.post(path, host, body, timeout, content_type)
         elapsed = time.monotonic() - started
         if client.status is None:
             print("no response received (timeout)", file=sys.stderr)
@@ -109,6 +111,8 @@ async def run(host: str, port: int, path: str, body: bytes, timeout: float) -> i
         )
         if client.received == len(body):
             print("echoed payload matches the request size")
+        if client.received and client.received != len(body):
+            print(f"response body: {bytes(client.body)[:2000]!r}")
         return 0 if client.status == 200 else 1
 
 
@@ -122,6 +126,7 @@ def main() -> int:
     ap.add_argument("--path", default="/upload.jpg", help="request path (default /upload.jpg)")
     ap.add_argument("--size-mb", type=int, default=2, help="generated JPEG size when no file given")
     ap.add_argument("--timeout", type=float, default=60.0, help="seconds to wait for the response")
+    ap.add_argument("--content-type", default="image/jpeg", help="request content-type (default image/jpeg)")
     args = ap.parse_args()
 
     if args.file:
@@ -131,7 +136,7 @@ def main() -> int:
         body = make_jpeg(args.size_mb)
         print(f"generated {len(body)} B test JPEG")
 
-    return asyncio.run(run(args.host, args.port, args.path, body, args.timeout))
+    return asyncio.run(run(args.host, args.port, args.path, body, args.timeout, args.content_type))
 
 
 if __name__ == "__main__":

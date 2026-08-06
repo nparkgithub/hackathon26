@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{self, Receiver, Sender, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -18,7 +18,7 @@ use mio::{Events, Poll, Token, Waker};
 use serde_json::json;
 use tquic::{Config, Connection, Endpoint, PacketInfo, TlsConfig, TransportHandler};
 
-use crate::config::BridgeConfig;
+use crate::config::{AnswerMode, BridgeConfig};
 use crate::output;
 use crate::socket::QuicSocket;
 
@@ -62,11 +62,27 @@ pub struct RelayRoute {
     pub h3_stream_id: u64,
 }
 
+/// Result of one `answer_mode: "forward"` HTTP call, reported back from its
+/// worker thread. `conn_index`/`stream_id` identify the *tunnel* stream the
+/// original request arrived on, same identity space as `relay_inbox`.
+struct ForwardJobResult {
+    conn_index: u64,
+    stream_id: u64,
+    result: Result<crate::forward::ForwardResponse, String>,
+}
+
 /// State shared between the transport callbacks and the poll loop.
 #[derive(Default)]
 struct Shared {
     is_server: bool,
     echo: bool,
+    /// Resolved once at startup from `BridgeConfig`; see
+    /// `BridgeConfig::resolved_answer_mode`. Only consulted when answering a
+    /// tunneled HTTP/3 request -- the plain non-H3 stream echo above follows
+    /// `echo` unconditionally, unaffected by this.
+    answer_mode: AnswerMode,
+    forward_url: Option<String>,
+    forward_timeout: Duration,
     remote: Option<SocketAddr>,
     /// Tunnel streams that carry relayed HTTP/3 traffic, and the partially
     /// received frame bytes for each.
@@ -457,6 +473,58 @@ fn maybe_emit_send_summary(endpoint: &mut Endpoint, shared: &Rc<RefCell<Shared>>
     );
 }
 
+/// Encodes `response` and queues it for send on the given tunnel stream,
+/// via the same `pending`/`flush_pending` path every other outbound write
+/// uses. Shared by the synchronous echo/ack path and the asynchronous
+/// forward-result path so both funnel through one place.
+fn queue_relay_response(
+    shared: &Rc<RefCell<Shared>>,
+    endpoint: &mut Endpoint,
+    index: u64,
+    stream_id: u64,
+    response: &crate::h3relay::RelayFrame,
+) {
+    let bytes = response.encode();
+    let status = response.header(":status").unwrap_or("0").to_string();
+    let body_len = response.body.len();
+    match endpoint.conn_get_mut(index) {
+        Some(conn) => {
+            let mut s = shared.borrow_mut();
+            s.pending
+                .entry((index, stream_id))
+                .or_default()
+                .extend_from_slice(&bytes);
+            Handler::flush_pending(&mut s, conn, stream_id);
+        }
+        None => {
+            warn!("h3 relay: tunnel connection {index} gone, dropping response for stream {stream_id}");
+            return;
+        }
+    }
+    output::push_event(
+        json!({
+            "type": "h3_response",
+            "status": status,
+            "bytes": body_len,
+            "tunnel_stream": stream_id,
+        })
+        .to_string(),
+    );
+}
+
+/// A short plain-text error response in the same relay-frame shape a real
+/// answer would use, for failure paths in `answer_mode: "forward"`.
+fn error_relay_frame(status: u16, message: &str) -> crate::h3relay::RelayFrame {
+    crate::h3relay::RelayFrame {
+        is_request: false,
+        headers: vec![
+            (":status".into(), status.to_string()),
+            ("content-type".into(), "text/plain".into()),
+        ],
+        body: message.as_bytes().to_vec(),
+    }
+}
+
 fn parse_addr(s: &str) -> Result<SocketAddr, String> {
     s.parse::<SocketAddr>()
         .map_err(|e| format!("invalid address '{s}': {e}"))
@@ -483,8 +551,12 @@ fn run_inner(
     let shared = Rc::new(RefCell::new(Shared {
         is_server,
         echo: cfg.echo,
+        answer_mode: cfg.resolved_answer_mode(),
+        forward_url: cfg.forward_url.clone(),
+        forward_timeout: cfg.forward_timeout(),
         ..Default::default()
     }));
+    let (forward_tx, forward_rx) = mpsc::channel::<ForwardJobResult>();
 
     // Bind sockets.
     let (sock, remote) = if is_server {
@@ -679,6 +751,31 @@ fn run_inner(
             }
         }
 
+        // Deliver any answer_mode="forward" results that finished since the
+        // last turn. No dedicated waker for this channel -- the poll loop
+        // already wakes at least every STATS_INTERVAL regardless, and that
+        // latency is negligible next to how long a real backend call takes.
+        loop {
+            match forward_rx.try_recv() {
+                Ok(job) => {
+                    let response = match job.result {
+                        Ok(fr) => crate::h3relay::RelayFrame {
+                            is_request: false,
+                            headers: vec![
+                                (":status".into(), fr.status.to_string()),
+                                ("content-type".into(), fr.content_type),
+                            ],
+                            body: fr.body,
+                        },
+                        Err(e) => error_relay_frame(502, &format!("forward failed: {e}")),
+                    };
+                    queue_relay_response(&shared, &mut endpoint, job.conn_index, job.stream_id, &response);
+                }
+                Err(TryRecvError::Empty) => break,
+                Err(TryRecvError::Disconnected) => break,
+            }
+        }
+
         // Relay complete HTTP/3 requests from the local listener over the
         // tunnel: one fresh bidi stream per request, so large image uploads
         // don't block each other and the reply matches its request.
@@ -750,46 +847,65 @@ fn run_inner(
                     })
                     .to_string(),
                 );
-                let echo = shared.borrow().echo;
-                let response = crate::h3relay::RelayFrame {
-                    is_request: false,
-                    headers: vec![
-                        (":status".into(), "200".into()),
-                        (
-                            "content-type".into(),
-                            frame
-                                .header("content-type")
-                                .unwrap_or("application/octet-stream")
-                                .to_string(),
-                        ),
-                        ("x-mpquic-received".into(), body_len.to_string()),
-                    ],
-                    // Echo mode returns the payload (e.g. the JPEG) as-is;
-                    // otherwise just acknowledge the byte count.
-                    body: if echo {
-                        frame.body
-                    } else {
-                        format!("received {body_len} bytes").into_bytes()
-                    },
+
+                let (answer_mode, forward_url, forward_timeout) = {
+                    let s = shared.borrow();
+                    (s.answer_mode, s.forward_url.clone(), s.forward_timeout)
                 };
-                let bytes = response.encode();
-                if let Some(conn) = endpoint.conn_get_mut(index) {
-                    let mut s = shared.borrow_mut();
-                    s.pending
-                        .entry((index, stream_id))
-                        .or_default()
-                        .extend_from_slice(&bytes);
-                    Handler::flush_pending(&mut s, conn, stream_id);
+
+                if answer_mode == AnswerMode::Forward {
+                    // Dispatched to a worker thread and answered later (see
+                    // the forward_rx drain below) -- never block the reactor
+                    // on this, a real backend call can take many seconds.
+                    match forward_url {
+                        Some(url) => {
+                            let content_type = frame
+                                .header("content-type")
+                                .unwrap_or("application/json")
+                                .to_string();
+                            let tx = forward_tx.clone();
+                            let body = frame.body;
+                            std::thread::spawn(move || {
+                                let result =
+                                    crate::forward::forward(&url, &content_type, body, forward_timeout);
+                                let _ = tx.send(ForwardJobResult {
+                                    conn_index: index,
+                                    stream_id,
+                                    result,
+                                });
+                            });
+                        }
+                        None => {
+                            error!("answer_mode=forward but no forward_url configured");
+                            let response = error_relay_frame(502, "forward_url not configured");
+                            queue_relay_response(&shared, &mut endpoint, index, stream_id, &response);
+                        }
+                    }
+                } else {
+                    // echo/ack: unchanged synchronous behavior.
+                    let response = crate::h3relay::RelayFrame {
+                        is_request: false,
+                        headers: vec![
+                            (":status".into(), "200".into()),
+                            (
+                                "content-type".into(),
+                                frame
+                                    .header("content-type")
+                                    .unwrap_or("application/octet-stream")
+                                    .to_string(),
+                            ),
+                            ("x-mpquic-received".into(), body_len.to_string()),
+                        ],
+                        // Echo mode returns the payload (e.g. the JPEG) as-is;
+                        // otherwise just acknowledge the byte count.
+                        body: if answer_mode == AnswerMode::Echo {
+                            frame.body
+                        } else {
+                            format!("received {body_len} bytes").into_bytes()
+                        },
+                    };
+                    queue_relay_response(&shared, &mut endpoint, index, stream_id, &response);
                 }
-                output::push_event(
-                    json!({
-                        "type": "h3_response",
-                        "status": 200,
-                        "bytes": response.body.len(),
-                        "tunnel_stream": stream_id,
-                    })
-                    .to_string(),
-                );
             } else {
                 // Client side: hand the response back to the local HTTP/3
                 // client that made the request.

@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod engine;
+pub mod forward;
 pub mod h3relay;
 pub mod output;
 pub mod socket;

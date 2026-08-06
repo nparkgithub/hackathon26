@@ -24,6 +24,28 @@ fn default_keepalive() -> u64 {
     15_000
 }
 
+fn default_forward_timeout() -> u64 {
+    // Generous: a real VLM/LLM backend call can be slow. Matches
+    // tquic-vlm-server-interface's own --vlm-timeout-ms default.
+    120_000
+}
+
+/// Resolved answer behavior for a tunneled HTTP/3 request, server role only.
+/// See `BridgeConfig::answer_mode`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum AnswerMode {
+    /// Echo the request body back verbatim (the crate's original demo behavior).
+    #[default]
+    Echo,
+    /// Reply with a short "received N bytes" acknowledgement, not the payload.
+    Ack,
+    /// POST the request body verbatim to `forward_url` and relay the
+    /// response back verbatim -- no packaging/repackaging of any kind. The
+    /// caller is responsible for tunneling a body already shaped exactly as
+    /// the backend expects.
+    Forward,
+}
+
 #[derive(Deserialize, Debug, Clone)]
 pub struct BridgeConfig {
     /// "client" or "server"
@@ -64,9 +86,27 @@ pub struct BridgeConfig {
     pub cert_file: Option<String>,
     pub key_file: Option<String>,
 
-    /// Echo received stream data back to the peer (server only).
+    /// Echo received stream data back to the peer (server only). Also the
+    /// legacy fallback for `answer_mode` on a tunneled HTTP/3 request when
+    /// `answer_mode` itself is absent -- see `BridgeConfig::answer_mode()`.
     #[serde(default = "default_true")]
     pub echo: bool,
+
+    /// "echo" | "ack" | "forward", server role, tunneled HTTP/3 requests
+    /// only (the plain non-H3 stream echo above is unaffected and always
+    /// follows `echo`). Absent by default, in which case behavior falls
+    /// back to `echo` for full backward compatibility with existing
+    /// callers (the Android app, mpquic-cli) that only ever set `echo`.
+    pub answer_mode: Option<String>,
+
+    /// Required when `answer_mode == "forward"`: URL to POST a tunneled
+    /// request's body to verbatim, e.g.
+    /// "http://127.0.0.1:11434/v1/chat/completions".
+    pub forward_url: Option<String>,
+
+    /// Per-call timeout for `answer_mode: "forward"`.
+    #[serde(default = "default_forward_timeout")]
+    pub forward_timeout_ms: u64,
 
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_ms: u64,
@@ -97,5 +137,24 @@ impl BridgeConfig {
 
     pub fn alpn_bytes(&self) -> Vec<Vec<u8>> {
         self.alpn.iter().map(|s| s.as_bytes().to_vec()).collect()
+    }
+
+    pub fn resolved_answer_mode(&self) -> AnswerMode {
+        match self.answer_mode.as_deref() {
+            Some("forward") => AnswerMode::Forward,
+            Some("ack") => AnswerMode::Ack,
+            Some("echo") => AnswerMode::Echo,
+            _ => {
+                if self.echo {
+                    AnswerMode::Echo
+                } else {
+                    AnswerMode::Ack
+                }
+            }
+        }
+    }
+
+    pub fn forward_timeout(&self) -> std::time::Duration {
+        std::time::Duration::from_millis(self.forward_timeout_ms)
     }
 }

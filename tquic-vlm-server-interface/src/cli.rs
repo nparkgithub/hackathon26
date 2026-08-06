@@ -72,6 +72,35 @@ pub struct Args {
     /// with their own per-field cap.
     #[arg(long, default_value_t = 32 * 1024 * 1024)]
     pub max_body_bytes: usize,
+
+    /// UDP address for the MPQUIC tunnel terminus (mpquic-jni, "server"
+    /// role, answer_mode="forward") -- a second, independent listener
+    /// alongside `--bind`'s plain-H3-JSON one. A real MPQUIC client (the
+    /// Android app or `mpquic-client`) tunnels an HTTP/3 request to this
+    /// address; its body is forwarded verbatim to `--vlm-base-url`, no
+    /// packaging/repackaging, and the raw response relayed back.
+    #[arg(long, default_value = "0.0.0.0:4433")]
+    pub mpquic_bind: SocketAddr,
+
+    /// PEM cert for the MPQUIC tunnel terminus. Defaults to the same file
+    /// as `--cert` -- verify_peer=false on every known client of this
+    /// tunnel makes the cert's actual content non-blocking either way.
+    #[arg(long)]
+    pub mpquic_cert: Option<PathBuf>,
+
+    /// PEM key for the MPQUIC tunnel terminus. Defaults to `--key`.
+    #[arg(long)]
+    pub mpquic_key: Option<PathBuf>,
+
+    /// minrtt | redundant | roundrobin -- mpquic's own flag vocabulary,
+    /// kept distinct from `--congestion-control` since this is a genuinely
+    /// different tunnel/connection from the plain-H3-JSON listener.
+    #[arg(long, default_value = "minrtt")]
+    pub mpquic_scheduler: String,
+
+    /// cubic | bbr | bbr3 | copa, for the MPQUIC tunnel specifically.
+    #[arg(long, default_value = "bbr")]
+    pub mpquic_congestion_control: String,
 }
 
 pub struct ValidatedArgs {
@@ -104,6 +133,16 @@ impl Args {
         if !self.infer_path.starts_with('/') {
             return Err(format!("--infer-path='{}' must start with '/'", self.infer_path));
         }
+        if let Some(cert) = &self.mpquic_cert {
+            if !cert.exists() {
+                return Err(format!("--mpquic-cert '{}' does not exist", cert.display()));
+            }
+        }
+        if let Some(key) = &self.mpquic_key {
+            if !key.exists() {
+                return Err(format!("--mpquic-key '{}' does not exist", key.display()));
+            }
+        }
         Ok(ValidatedArgs { args: self })
     }
 }
@@ -111,5 +150,15 @@ impl Args {
 impl ValidatedArgs {
     pub fn vlm_timeout(&self) -> Duration {
         Duration::from_millis(self.args.vlm_timeout_ms)
+    }
+
+    /// Resolves to `--mpquic-cert`, falling back to `--cert`.
+    pub fn mpquic_cert_path(&self) -> &std::path::Path {
+        self.args.mpquic_cert.as_deref().unwrap_or(&self.args.cert)
+    }
+
+    /// Resolves to `--mpquic-key`, falling back to `--key`.
+    pub fn mpquic_key_path(&self) -> &std::path::Path {
+        self.args.mpquic_key.as_deref().unwrap_or(&self.args.key)
     }
 }
