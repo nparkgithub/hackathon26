@@ -96,11 +96,24 @@ The cache exists so a burst of captures does not re-probe every time, while a ba
 
 ### TQUIC request and response shape
 
-The mpquic tunnel runs in `answer_mode: "forward"`, which POSTs the tunneled body **verbatim** to the configured backend ("no packaging/repackaging of any kind" — `forward.rs`). The body must therefore already be what Ollama accepts: the OpenAI `/chat/completions` shape, with the JPEG base64-encoded into a `data:` URI.
+All of the following was **verified live on 2026-08-06** — see "Step 0" under Testing.
 
-The response is the backend's raw JSON, relayed unmodified, so this leg reads `choices[0].message.content` — the same field `tquic-vlm-server-interface` extracts for its own simple shape.
+| Property | Value |
+|---|---|
+| Target | `https://127.0.0.1:47443` |
+| Method / path | `POST /infer` |
+| Content-Type | `application/json` |
+| Body | OpenAI `/chat/completions` shape, JPEG base64 in a `data:` URI |
+| Success | `200`, body is the backend's raw JSON |
+| Answer field | `choices[0].message.content` |
+
+The mpquic tunnel runs in `answer_mode: "forward"`, which POSTs the tunneled body **verbatim** to the configured backend ("no packaging/repackaging of any kind" — `forward.rs`). The body must therefore already be what Ollama accepts.
 
 Note this is deliberately *not* the simpler `{"jpeg","prompt"}` → `text/plain` contract. That one applies only when talking directly to `tquic-vlm-server-interface`, which would bypass the tunnel and the multipath work this route exists to use.
+
+**Read `content`, never `reasoning`.** The observed model (`qwen3-vl:8b` on Ollama) returns a `reasoning` field alongside `content` in the same message object, containing its chain of thought — *"So, let's look at the image. First, it's a workspace with various tech items…"*. Since the glasses speak `speak` verbatim, reading the wrong field would have the wearer listening to the model's internal monologue. This is a live hazard, not a hypothetical: it was present in both verification responses.
+
+**Base64 inflation:** a 62,323 B JPEG became an 83,291 B request body (~1.34×). Comfortably under the tunnel's limits, but it means the TQUIC leg sends roughly a third more bytes than the DevMon leg for the same capture.
 
 ## Failover policy
 
@@ -159,18 +172,30 @@ Every routing decision is logged with the capture id and the chosen leg's `name`
 
 ## Testing
 
-### Step 0 — prove the TQUIC path exists (before any Kotlin)
+### Step 0 — prove the TQUIC path exists — **DONE, passed 2026-08-06**
 
-Nobody has sent an image through phone → mpquic → Ubuntu → Ollama. The `tquic-vlm-server-interface` guide explicitly lists the Android side of that wire protocol as not done. Building a careful failover to a destination that cannot answer would be the single largest waste available here.
+This gate existed because nobody had sent an image through phone → mpquic → EC2 → Ollama, and building a careful failover to a destination that cannot answer would have been the largest available waste. It has now been run twice, live.
 
-`mpquic/tools/h3_sender.py` already drives the phone's h3 intake from a desktop:
+Topology (from `tquic-vlm-server-interface/docs/mpquic-tunnel-verification.md`): the phone's mpquic client tunnels over the internet to **EC2 `54.190.37.190:10000`**, running `tquic-vlm-server-interface --mpquic-bind 0.0.0.0:10000` in `answer_mode=forward`, which forwards to Ollama (`qwen3-vl:8b`) on the same box.
+
+Reproduce with:
 
 ```
 pip install aioquic
-python mpquic/tools/h3_sender.py <phone-ip> photo.jpg
+python mpquic/tools/h3_sender.py 10.73.51.71 request.json \
+  --port 47443 --path /infer --content-type application/json --timeout 120
 ```
 
-Prerequisites: the mpquic client app installed and running on the phone, "Start HTTP/3 RX" started, and its MPQUIC connection to the Ubuntu box up. If an answer comes back from Ollama, the fallback is real. If not, fix the tunnel or reconsider the target before building against it.
+Prerequisites: mpquic client app running, server address set to the EC2 endpoint, **Connect** tapped, then **Start HTTP/3 RX** on 47443. The h3 listener dies with the tunnel, so connect first.
+
+Results:
+
+| Payload | Request body | Response | Time |
+|---|---|---|---|
+| Repo sample image | 112,217 B | `200`, 2,907 B | 14.0 s |
+| **Real 640×480 glasses capture** | 83,291 B | `200`, 3,915 B | **18.7 s** |
+
+The second run used the actual capture and query from the 2026-08-06 device test (`cap_1786037877556_d411b084`, "What am I looking at") and returned a correct description of the same scene DevMon described. **TQUIC 18.7 s versus DevMon 24.4 s** — the fallback is not a slow path, and both sit far inside the 125 s deadline.
 
 ### Unit (no device)
 
@@ -195,6 +220,7 @@ Following the existing pattern in this module — pure, `android.util.Log`-free 
 
 ## Open items
 
-- **The TQUIC leg is unproven end to end.** Step 0 exists to settle this before implementation, not after. If it fails, this design's fallback has no destination and the work should stop until the tunnel works.
-- `aioquic` is not installed on the development Mac, and whether the mpquic client app is installed on the phone is unconfirmed (both devices were disconnected at the time of writing).
+- **The fallback depends on manual phone setup that nothing enforces.** The mpquic client app must be running, connected to EC2, and have HTTP/3 RX started — three UI taps, lost on every app restart, and the h3 listener dies with the tunnel. A wearer cannot know this failed. `TquicAnswerProvider.isHealthy()` can detect it (nothing bound on 47443), but nothing can *fix* it from inside this app. Treat it as a demo-day checklist item.
+- **The EC2 endpoint is hardcoded into someone's phone, not into any config.** `54.190.37.190` is an EC2 public IP, which changes if the instance is stopped and started. If the tunnel stops working, re-check this address before debugging anything in this app.
 - The cold/slow-model case remains uncovered by design (requirement 3). If it later proves to be the dominant failure, the fix belongs in DevMon — a bounded upstream timeout returning `500` — not in this router.
+- **Both backends return long, markdown-heavy prose.** The TQUIC leg has exactly the same problem already seen with DevMon: `**bold**`, bullet lists, and answers long enough to exceed the glasses' 60 s playback watchdog. Being addressed by prompt tuning, not by this design, but the fallback inherits it rather than escaping it.
