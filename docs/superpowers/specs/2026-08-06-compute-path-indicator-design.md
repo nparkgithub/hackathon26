@@ -85,3 +85,14 @@ For a pinned provider, `MainActivity` reads `computeLabel` once at launch and se
 ## Open items
 
 None. The feature is one text line and one callback.
+
+## Device verification — 2026-08-06
+
+Line renders as `Compute: Remote compute (TQUIC → EC2)` under Frame rate.
+
+Confirmed by a screenshot taken **five seconds into a capture**, with the answer not yet returned —
+the panel still showed only the photo and the question. Requirement 2 holds: the line is populated
+during the wait, not with the answer.
+
+Unit-covered: healthy primary reports the primary's label; unhealthy reports the fallback's; a
+retriable failure reports both in order, which is the case that makes a live failover visible.
