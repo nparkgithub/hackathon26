@@ -92,7 +92,8 @@ fn echo_roundtrip(listen: &str, connect_to: &str, locals: &[&str]) -> String {
 
     client_running.store(false, Ordering::Relaxed);
     server_running.store(false, Ordering::Relaxed);
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_secs(1));
+    output::drain();
 
     assert!(
         all.contains("\"type\":\"connected\""),
@@ -188,7 +189,8 @@ fn two_path_redundant_reports_bytes_on_each_path() {
 
     client_running.store(false, Ordering::Relaxed);
     server_running.store(false, Ordering::Relaxed);
-    std::thread::sleep(Duration::from_millis(300));
+    std::thread::sleep(Duration::from_secs(1));
+    output::drain();
 
     let summary = summary.unwrap_or_else(|| panic!("no send_complete; output:\n{all}"));
     let paths = summary["paths"].as_array().unwrap();
@@ -201,6 +203,89 @@ fn two_path_redundant_reports_bytes_on_each_path() {
             "path carried too little ({bytes} B / {pkts} pkts): {p}"
         );
     }
+}
+
+/// Keep-alive must hold a connection open well past the idle timeout, and
+/// the connection must still carry data afterwards. Uses a deliberately
+/// tiny idle timeout so the test stays fast.
+#[test]
+fn keepalive_holds_connection_past_idle_timeout() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    output::init_logger("info");
+    output::drain();
+
+    let assets = assets_dir();
+    let (_server_tx, server_running) = spawn_engine(serde_json::json!({
+        "role": "server",
+        "listen": "127.0.0.1:14439",
+        "cert_file": format!("{assets}/server.crt"),
+        "key_file": format!("{assets}/server.key"),
+        "enable_multipath": true,
+        "log_level": "info",
+        "echo": true,
+        "idle_timeout_ms": 3000,
+        "keepalive_ms": 500,
+    }));
+    std::thread::sleep(Duration::from_millis(500));
+    let (client_tx, client_running) = spawn_engine(serde_json::json!({
+        "role": "client",
+        "connect_to": "127.0.0.1:14439",
+        "local_addresses": ["127.0.0.1"],
+        "enable_multipath": true,
+        "log_level": "info",
+        "idle_timeout_ms": 3000,
+        "keepalive_ms": 500,
+    }));
+
+    // Wait for the handshake, then stay completely silent for several times
+    // the idle timeout.
+    let mut all = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        all.push_str(&output::drain());
+        if all.contains("\"type\":\"connected\"") {
+            break;
+        }
+    }
+    assert!(
+        all.contains("\"type\":\"connected\""),
+        "never connected; output:\n{all}"
+    );
+
+    let quiet_start = all.len();
+    std::thread::sleep(Duration::from_secs(9)); // 3x the idle timeout
+    all.push_str(&output::drain());
+    let during_quiet = &all[quiet_start..];
+    assert!(
+        !during_quiet.contains("idle timeout") && !during_quiet.contains("\"disconnected\""),
+        "connection dropped while idle despite keep-alive; output:\n{during_quiet}"
+    );
+
+    // ...and it still works.
+    client_tx.send(Cmd::Send(b"after-idle".to_vec())).unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut echoes = 0;
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        all.push_str(&output::drain());
+        echoes = all.matches("after-idle").count();
+        if echoes >= 2 {
+            break;
+        }
+    }
+
+    client_running.store(false, Ordering::Relaxed);
+    server_running.store(false, Ordering::Relaxed);
+    // Let the engines finish and clear the shared output queue, so their
+    // trailing events can't leak into whichever test runs next.
+    std::thread::sleep(Duration::from_secs(1));
+    output::drain();
+
+    assert!(
+        echoes >= 2,
+        "no echo round-trip after the idle period ({echoes} sightings); output:\n{all}"
+    );
 }
 
 /// Full HTTP/3 relay path: an external HTTP/3 client POSTs a JPEG-sized

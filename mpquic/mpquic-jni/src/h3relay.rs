@@ -258,7 +258,9 @@ impl H3Listener {
         token_base: usize,
     ) -> Result<Self, String> {
         let mut config = Config::new().map_err(|e| e.to_string())?;
-        config.set_max_idle_timeout(60_000);
+        // Generous: an external client may hold the connection open between
+        // uploads, and a slow multi-MB POST must not trip the timer.
+        config.set_max_idle_timeout(300_000);
         config.set_initial_max_streams_bidi(128);
         config.set_recv_udp_payload_size(65527);
         // Large JPEG bodies: allow generous stream/connection flow control.

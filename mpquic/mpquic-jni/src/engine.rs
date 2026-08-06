@@ -13,7 +13,7 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use bytes::Bytes;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use mio::{Events, Poll, Token, Waker};
 use serde_json::json;
 use tquic::{Config, Connection, Endpoint, PacketInfo, TlsConfig, TransportHandler};
@@ -571,6 +571,11 @@ fn run_inner(
     let mut recv_buf = vec![0u8; MAX_BUF_SIZE];
     let mut last_stats = Instant::now();
     let mut h3_listener: Option<crate::h3relay::H3Listener> = None;
+    let keepalive = match cfg.keepalive_ms {
+        0 => None,
+        ms => Some(Duration::from_millis(ms)),
+    };
+    let mut last_keepalive = Instant::now();
 
     loop {
         endpoint
@@ -883,6 +888,44 @@ fn run_inner(
         endpoint.on_timeout(Instant::now());
         if let Some(l) = h3_listener.as_mut() {
             l.endpoint.on_timeout(Instant::now());
+        }
+
+        // Keep the tunnel alive between transfers: a PING resets the idle
+        // timer on both ends, so a connection only drops when the peer is
+        // really gone.
+        if let Some(interval) = keepalive {
+            if last_keepalive.elapsed() >= interval {
+                let conns = shared.borrow().conns.clone();
+                for index in conns {
+                    let Some(conn) = endpoint.conn_get_mut(index) else {
+                        continue;
+                    };
+                    if let Err(e) = conn.ping(None) {
+                        debug!("keepalive ping failed on conn {index}: {e:?}");
+                        continue;
+                    }
+                    // ping() only flags the path; tquic builds packets for
+                    // "tickable" connections, so nudge this one to make the
+                    // PING go out. Any stream op sets that flag — reuse the
+                    // engine's outbound stream (creating it here is free and
+                    // it is the same one app sends would use).
+                    let stream_id = {
+                        let mut s = shared.borrow_mut();
+                        match s.out_stream.get(&index) {
+                            Some(id) => Some(*id),
+                            None => conn.stream_bidi_new(0, true).ok().inspect(|id| {
+                                s.out_stream.insert(index, *id);
+                            }),
+                        }
+                    };
+                    if let Some(stream_id) = stream_id {
+                        // `false` keeps the writable callback quiet; the
+                        // tickable flag is set regardless.
+                        let _ = conn.stream_want_write(stream_id, false);
+                    }
+                }
+                last_keepalive = Instant::now();
+            }
         }
 
         maybe_emit_send_summary(&mut endpoint, &shared);

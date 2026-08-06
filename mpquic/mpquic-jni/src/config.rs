@@ -12,7 +12,16 @@ fn default_true() -> bool {
 }
 
 fn default_idle_timeout() -> u64 {
-    30_000
+    // 5 minutes: long enough that a connection survives think-time between
+    // manual sends. Keep-alive pings (below) normally prevent it firing at
+    // all; this is the backstop for when the peer really is gone.
+    300_000
+}
+
+fn default_keepalive() -> u64 {
+    // PING interval while the connection is otherwise idle. Must be well
+    // under the idle timeout on both ends; 0 disables it.
+    15_000
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -61,6 +70,11 @@ pub struct BridgeConfig {
 
     #[serde(default = "default_idle_timeout")]
     pub idle_timeout_ms: u64,
+
+    /// Send a QUIC PING every this many ms while idle so the connection
+    /// stays up between transfers. 0 disables keep-alive.
+    #[serde(default = "default_keepalive")]
+    pub keepalive_ms: u64,
 }
 
 impl BridgeConfig {
