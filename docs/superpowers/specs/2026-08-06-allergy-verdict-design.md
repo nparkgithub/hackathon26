@@ -53,6 +53,8 @@ Answer in at most 5 sentences of plain text.
 Do not use markdown, asterisks, bullet points, or any formatting characters.
 The user is allergic to: peanuts, tree nuts, shellfish.
 Your final sentence must state whether this food is safe for the user.
+Say what you based that on, such as the ingredients you could read.
+Do not promise the food is safe; describe what you observed.
 Then output exactly one final line, nothing after it:
 VERDICT: SAFE  or  VERDICT: UNSAFE  or  VERDICT: UNKNOWN
 Use UNKNOWN if you cannot identify the food or read its ingredients.
@@ -163,5 +165,7 @@ The two pure functions carry all the logic worth testing and neither touches And
 ## Risks
 
 - **The allergy list leaves the device** with every query, to a LAN PC or an EC2 box. Acceptable for a hackathon and stated here so it is a decision rather than an oversight. A real product keeps health data local, which would mean on-device inference or an ingredient list the phone matches itself.
-- **A 4–8B vision model is making a safety call.** The token makes the verdict *legible*, not *correct*. The spoken sentence should stay hedged — "based on what I can read on the label" — rather than absolute, and the demo should not claim more than that.
+- **A 4–8B vision model is making a safety call.** The token makes the verdict *legible*, not *correct*: a right `VERDICT: SAFE` and a wrong one are indistinguishable to the app. The realistic failure is a label whose "may contain traces of nuts" line is too small to read, answered `SAFE` in good faith.
+
+  The prompt's two hedging lines are the mitigation available at this level. They do not make the verdict more accurate; they change what the wearer is told it means. *"Based on the ingredients I can read, I don't see your allergens listed"* invites the wearer to check a doubtful label themselves. *"This is safe to eat"* does not, and nothing behind it can support that claim.
 - **5 sentences is a request, not a guarantee.** If answers still overrun the glasses' 60 s playback watchdog, the watchdog is the backstop and the number comes down.
