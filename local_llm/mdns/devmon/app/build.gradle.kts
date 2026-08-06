@@ -52,4 +52,9 @@ dependencies {
     implementation("ai.koog:http-client-ktor:$koogVersion")
     // Koog delegates HTTP to Ktor; Android needs a concrete engine at runtime.
     implementation("io.ktor:ktor-client-okhttp:3.3.3")
+
+    testImplementation("junit:junit:4.13.2")
+    // Android's built-in org.json is a stub that throws off-device; this pulls in a real impl for JVM unit tests.
+    testImplementation("org.json:json:20240303")
+    testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
 }

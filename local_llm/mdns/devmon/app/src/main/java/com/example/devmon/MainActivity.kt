@@ -23,6 +23,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var ui: ActivityMainBinding
     private lateinit var advertiser: AdvertiserService
+    private lateinit var analyzeServer: AnalyzeHttpServer
     private var selectedImage: ByteArray? = null
     private var selectedImageMimeType: String = "image/jpeg"
 
@@ -51,6 +52,8 @@ class MainActivity : AppCompatActivity() {
         setContentView(ui.root)
 
         advertiser = AdvertiserService(this)
+        analyzeServer = AnalyzeHttpServer { advertiser.peers.value }
+        analyzeServer.start()
 
         ui.btnToggle.setOnClickListener {
             if (advertiser.state.value is AdvertiserService.State.Advertising) {
@@ -135,23 +138,22 @@ class MainActivity : AppCompatActivity() {
             ui.txtAnalysis.text = "Select an image first."
             return
         }
-        // Both endpoint and model originate in one received reporter frame.
-        val target = advertiser.peers.value.values.firstNotNullOfOrNull { telemetry ->
-            val endpoint = telemetry.openAiEndpoint ?: return@firstNotNullOfOrNull null
-            val model = telemetry.llms.firstOrNull { it.vision } ?: return@firstNotNullOfOrNull null
-            endpoint to model
-        }
-        if (target == null) {
-            ui.txtAnalysis.text = "No peer reported both a non-local OpenAI endpoint and a vision model."
+        val target = selectAnalysisTarget(advertiser.peers.value)
+        if (target !is AnalysisTarget.Found) {
+            ui.txtAnalysis.text = when (target) {
+                is AnalysisTarget.NoPeer -> "No peer reported an OpenAI-compatible endpoint yet."
+                is AnalysisTarget.NoVisionModel -> "A peer is connected, but none reported a vision model."
+                is AnalysisTarget.Found -> return  // unreachable
+            }
             return
         }
 
         ui.btnAnalyze.isEnabled = false
-        ui.txtAnalysis.text = "Analyzing with ${target.second.name} at ${target.first}…"
+        ui.txtAnalysis.text = "Analyzing with ${target.model.name} at ${target.endpoint}…"
         lifecycleScope.launch {
             val outcome = runCatching {
                 withContext(Dispatchers.IO) {
-                    OpenAiAnalysisClient.analyze(target.first, target.second, image, selectedImageMimeType)
+                    OpenAiAnalysisClient.analyze(target.endpoint, target.model, image, selectedImageMimeType)
                 }
             }
             ui.txtAnalysis.text = outcome.fold(
@@ -184,14 +186,10 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         advertiser.shutdown()
+        analyzeServer.shutdown()
     }
 
     private companion object {
         const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
     }
-
-    private fun Throwable.describeCauseChain(): String =
-        generateSequence(this) { it.cause }
-            .take(4)
-            .joinToString(" <- ") { it.message ?: it.javaClass.simpleName }
 }

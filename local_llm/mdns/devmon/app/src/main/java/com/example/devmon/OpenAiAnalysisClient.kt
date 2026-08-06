@@ -26,7 +26,9 @@ object OpenAiAnalysisClient {
         model: Telemetry.Llm,
         imageBytes: ByteArray,
         mimeType: String,
+        query: String = "",
     ): String {
+        val promptText = query.trim().ifBlank { ALLERGY_PROMPT.trimIndent() }
         val image = AttachmentSource.Image(
             content = AttachmentContent.Binary.Bytes(imageBytes),
             format = mimeType.substringAfter('/', missingDelimiterValue = "jpeg"),
@@ -35,7 +37,7 @@ object OpenAiAnalysisClient {
         )
         val request = prompt("allergy-image-analysis") {
             user {
-                text(ALLERGY_PROMPT.trimIndent())
+                text(promptText)
                 image(image)
             }
         }
