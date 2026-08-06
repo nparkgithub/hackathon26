@@ -110,6 +110,16 @@ class MainActivity : AppCompatActivity() {
                 "I: recv ${ev.optInt("bytes")} B on stream ${ev.optLong("stream")}" +
                     " \"${ev.optString("preview")}\""
             )
+            "h3_request" -> appendLog(
+                "I: h3 ${ev.optString("method")} ${ev.optString("path")}" +
+                    " (${ev.optString("content_type")}) ${ev.optInt("bytes")} B" +
+                    " on tunnel stream ${ev.optLong("tunnel_stream")}"
+            )
+            "h3_response" -> appendLog(
+                "I: h3 response ${ev.optString("status")} ${ev.optInt("bytes")} B" +
+                    " -> tunnel stream ${ev.optLong("tunnel_stream")}"
+            )
+            "h3_error" -> appendLog("E: h3: ${ev.optString("message")}")
             "send_complete" -> renderSendSummary(ev)
             "stats" -> renderStats(ev)
             "error" -> appendLog("E: ${ev.optString("message")}")

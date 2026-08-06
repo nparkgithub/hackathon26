@@ -34,6 +34,7 @@ class MainActivity : AppCompatActivity() {
     private val ifaceByIp = mutableMapOf<String, String>()
     private val logBuffer = StringBuilder()
     private var udpIngest: UdpIngest? = null
+    private var h3Running = false
 
     // Read from the UDP receive thread, written on the UI thread.
     @Volatile
@@ -121,6 +122,7 @@ class MainActivity : AppCompatActivity() {
                 disconnectBtn.isEnabled = true
                 sendBtn.isEnabled = true
                 sendBulkBtn.isEnabled = true
+                findViewById<Button>(R.id.h3Btn).isEnabled = true
             }
         }
 
@@ -133,6 +135,7 @@ class MainActivity : AppCompatActivity() {
             disconnectBtn.isEnabled = false
             sendBtn.isEnabled = false
             sendBulkBtn.isEnabled = false
+            resetH3Controls()
             appendLog("I: stopped")
         }
 
@@ -186,6 +189,33 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // HTTP/3 intake: a real local HTTP/3 server whose requests (e.g.
+        // large JPEG POSTs) are tunneled over MPQUIC; the peer's response is
+        // returned to the same HTTP/3 client.
+        val h3Btn = findViewById<Button>(R.id.h3Btn)
+        val h3Port = findViewById<EditText>(R.id.h3Port)
+        h3Btn.setOnClickListener {
+            if (!h3Running) {
+                val port = h3Port.text.toString().trim().toIntOrNull()
+                if (port == null || port !in 1..65535) {
+                    appendLog("E: invalid HTTP/3 port '${h3Port.text}'")
+                    return@setOnClickListener
+                }
+                val cert = NetUtils.assetToFile(this, "server.crt")
+                val key = NetUtils.assetToFile(this, "server.key")
+                if (engine.h3Listen(port, cert, key)) {
+                    h3Running = true
+                    h3Port.isEnabled = false
+                    h3Btn.text = "Stop HTTP/3 RX"
+                }
+            } else {
+                engine.h3Stop()
+                h3Running = false
+                h3Port.isEnabled = true
+                h3Btn.text = "Start HTTP/3 RX"
+            }
+        }
+
         sendBulkBtn.setOnClickListener {
             val sizeMb = bulkSize.selectedItem.toString().substringBefore(' ').toInt()
             val unit = ByteArray(1024 * 1024) { (it % 251).toByte() }
@@ -195,6 +225,16 @@ class MainActivity : AppCompatActivity() {
             }
             engine.send(payload)
             appendLog("I: sent $sizeMb MB test payload")
+        }
+    }
+
+    /** The h3 listener lives inside the engine, so it dies with the tunnel. */
+    private fun resetH3Controls() {
+        h3Running = false
+        findViewById<EditText>(R.id.h3Port).isEnabled = true
+        findViewById<Button>(R.id.h3Btn).apply {
+            text = "Start HTTP/3 RX"
+            isEnabled = false
         }
     }
 
@@ -233,6 +273,18 @@ class MainActivity : AppCompatActivity() {
                 "I: recv ${ev.optInt("bytes")} B on stream ${ev.optLong("stream")}" +
                     " \"${ev.optString("preview")}\""
             )
+            "h3_listening" -> appendLog("I: HTTP/3 listener on 0.0.0.0:${ev.optInt("port")} -> tunnel")
+            "h3_stopped" -> appendLog("I: HTTP/3 listener stopped")
+            "h3_request" -> appendLog(
+                "I: h3 ${ev.optString("method")} ${ev.optString("path")}" +
+                    " (${ev.optString("content_type")}) ${ev.optInt("bytes")} B" +
+                    " -> tunnel stream ${ev.optLong("tunnel_stream")}"
+            )
+            "h3_response" -> appendLog(
+                "I: h3 response ${ev.optString("status")} ${ev.optInt("bytes")} B" +
+                    " <- tunnel stream ${ev.optLong("tunnel_stream")}"
+            )
+            "h3_error" -> appendLog("E: h3: ${ev.optString("message")}")
             "send_complete" -> renderSendSummary(ev)
             "stats" -> renderStats(ev)
             "error" -> appendLog("E: ${ev.optString("message")}")
@@ -248,6 +300,7 @@ class MainActivity : AppCompatActivity() {
                 findViewById<Button>(R.id.disconnectBtn).isEnabled = false
                 findViewById<Button>(R.id.sendBtn).isEnabled = false
                 findViewById<Button>(R.id.sendBulkBtn).isEnabled = false
+                resetH3Controls()
             }
             "stopped" -> appendLog("I: engine stopped")
             else -> appendLog("D: event $ev")

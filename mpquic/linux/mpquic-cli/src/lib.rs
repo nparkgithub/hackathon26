@@ -35,6 +35,9 @@ pub struct Options {
     pub message: Option<String>,
     /// Client: exit after the send_complete summary.
     pub oneshot: bool,
+    /// Client: run a local HTTP/3 listener on this port whose requests are
+    /// tunneled over the MPQUIC connection (same as the app's HTTP/3 RX).
+    pub h3_port: Option<u16>,
     /// Print the per-second stats events too.
     pub stats: bool,
 }
@@ -56,6 +59,7 @@ impl Options {
             send_mb: None,
             message: None,
             oneshot: false,
+            h3_port: None,
             stats: false,
         }
     }
@@ -100,6 +104,12 @@ pub fn parse(role: &'static str, args: &[String], usage: &str) -> Option<Options
                 })?)
             }
             "--message" => o.message = Some(value(args, &mut i, a)?.to_string()),
+            "--h3-port" => {
+                o.h3_port = Some(value(args, &mut i, a)?.parse().ok().or_else(|| {
+                    eprintln!("--h3-port needs a port number");
+                    None
+                })?)
+            }
             "--no-multipath" => o.multipath = false,
             "--no-echo" => o.echo = false,
             "--oneshot" => o.oneshot = true,
@@ -224,8 +234,31 @@ pub fn run(o: Options) -> i32 {
             };
             match ev["type"].as_str().unwrap_or("") {
                 "listening" => println!("== listening on {} ==", ev["addr"].as_str().unwrap_or("?")),
+                "h3_listening" => println!("== HTTP/3 listener on port {} ==", ev["port"]),
+                "h3_stopped" => println!("== HTTP/3 listener stopped =="),
+                "h3_request" => println!(
+                    "h3 {} {} ({}) {} B -> tunnel stream {}",
+                    ev["method"].as_str().unwrap_or("?"),
+                    ev["path"].as_str().unwrap_or("?"),
+                    ev["content_type"].as_str().unwrap_or(""),
+                    ev["bytes"],
+                    ev["tunnel_stream"]
+                ),
+                "h3_response" => println!(
+                    "h3 response {} {} B <- tunnel stream {}",
+                    ev["status"], ev["bytes"], ev["tunnel_stream"]
+                ),
+                "h3_error" => eprintln!("h3 error: {}", ev["message"].as_str().unwrap_or("?")),
                 "connected" => {
                     println!("== connected (multipath={}) ==", ev["multipath"]);
+                    if let Some(port) = o.h3_port {
+                        let _ = cmd_tx.send(Cmd::H3Listen {
+                            port,
+                            cert: o.cert.clone(),
+                            key: o.key.clone(),
+                        });
+                        let _ = waker.wake();
+                    }
                     if !sent {
                         if let Some(mb) = o.send_mb {
                             println!("sending {mb} MB test payload...");

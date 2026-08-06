@@ -29,6 +29,14 @@ bin/x86_64/mpquic-client --connect <server:4433> --local 192.168.1.10,10.60.0.2 
     --scheduler redundant --send-mb 10 --oneshot
 ```
 
+```sh
+# HTTP/3 intake: run a local h3 server whose requests are tunneled over
+# MPQUIC (same feature as the Android client's "Start HTTP/3 RX" button)
+bin/x86_64/mpquic-client --connect 127.0.0.1:4433 --local 127.0.0.1 \
+    --h3-port 24443 --cert certs/server.crt --key certs/server.key
+# then, from anywhere:  python ../tools/h3_sender.py <host> -p 24443 photo.jpg
+```
+
 `--help` on either binary lists all flags. The client understands
 `--message TEXT`, `--stats`, `--no-multipath`, IPv6 (`[::1]:4433`), and the
 same schedulers/CC algorithms as the apps.
