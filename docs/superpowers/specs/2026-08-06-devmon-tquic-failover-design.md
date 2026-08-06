@@ -78,7 +78,7 @@ Considered and rejected. The team's stated goal was one protocol end-to-end to a
 
 **`DevmonAnswerProvider`** *(modified)* — implements `HealthCheckedProvider`. `isHealthy()` is unchanged in behaviour but gains a **dedicated OkHttpClient** with `HEALTH_CONNECT_TIMEOUT_SECONDS` = 2 and `HEALTH_READ_TIMEOUT_SECONDS` = 2. It must not share the answer client: a DevMon that accepts the connection but wedges would otherwise stall the *health probe* for the full 120 s read timeout, turning a safety feature into the worst hang in the system.
 
-**`TquicAnswerProvider`** *(new)* — implements `HealthCheckedProvider`. Speaks HTTP/3 to `127.0.0.1:47443` via `TquicNative`.
+**`TquicAnswerProvider`** *(new)* — implements `HealthCheckedProvider`. Speaks HTTP/3 to `127.0.0.1:47443` via `KwikH3Transport`.
 
 **`FailoverAnswerProvider`** *(new)* — the router. Probes primary health, picks a leg, delegates, and retries on the spare for the retriable failures below.
 
@@ -90,9 +90,32 @@ On demand rather than background polling: polling needs a lifecycle to start, st
 
 The cache exists so a burst of captures does not re-probe every time, while a backend that dies is still noticed within one TTL rather than staying selected indefinitely. A consequence worth accepting: for up to 10 s after DevMon fails, one capture may still be routed to it — that capture then falls back via the `503`/`500` path or, failing that, returns an error.
 
-### Why `TquicNative` and not Cronet
+### The HTTP/3 client — what was planned, and what shipped
 
-`TquicNative` (`ai.koog.http.client.tquic`) is the team's own H3 stack, already in-tree and already configured for the self-signed no-SAN certificate (`verifyPeer=false`). Cronet would introduce a second QUIC implementation, ~8 MB of AAR, and the well-known difficulty of forcing QUIC at a self-signed loopback endpoint — the likeliest way to lose a day.
+This design originally named `TquicNative` (`ai.koog.http.client.tquic`), on the grounds that it was the team's own stack and already in-tree. **That was wrong.** It is in-tree as Kotlin declarations only: `phone/shared/tquic-design/implementation-plan.md` states plainly that the `tquic-jni` crate behind them "has never been written," and no `libtquic_jni.so` exists anywhere. The recommendation was made without checking whether anything was behind the binding.
+
+Nothing off the shelf fills the gap either:
+
+| Candidate | Why not |
+|---|---|
+| OkHttp | No HTTP/3 support at all |
+| `TquicNative` | Native library never written |
+| `libmpquic_jni.so` | Exposes `nativeH3Listen` — a server; cannot originate a request |
+| Cronet | Cannot be made to trust the tunnel's self-signed, SAN-less certificate |
+| kwik + flupke | flupke is built on `java.net.http`, which Android does not ship |
+
+What shipped is `KwikH3Transport`: **kwik** for QUIC (it does run on Android, and offers `noServerCertificateCheck()` for the tunnel's cert), **`tech.kwik:qpack`** for header compression, and a hand-written HTTP/3 framing layer covering the few frames one request/response needs. About 200 lines, with the framing unit-tested against the worked examples in RFC 9000 §16.
+
+**The trap, recorded because it will bite anyone who touches this:** `Encoder.compressHeaders` returns its buffer still in *write* mode — position and limit both at the end — so reading `remaining()` bytes yields an **empty** header block. The QUIC connection succeeds, and only then does the peer reject the request with `qpack decode error: BufferTooShort`, which reads like a transport fault and is not one. `encodedHeaderBlock` flips it (through `java.nio.Buffer`, so Android's pre-Java-9 `ByteBuffer` signature is the one invoked), and a test pins the behaviour from both directions.
+
+**Operational finding:** the MPQUIC app's engine dies with `socket send_to(): PermissionDenied` when Android backgrounds it, which happens as soon as VideoShowCase comes to the foreground. Exempting it fixes this and needs no app change:
+
+```
+adb shell dumpsys deviceidle whitelist +com.mpquic.client
+adb shell cmd appops set com.mpquic.client RUN_ANY_IN_BACKGROUND allow
+```
+
+Without that exemption the fallback fails on any real capture, since the wearer's app is by definition in the foreground.
 
 ### TQUIC request and response shape
 
