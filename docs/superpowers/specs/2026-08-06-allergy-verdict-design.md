@@ -169,3 +169,28 @@ The two pure functions carry all the logic worth testing and neither touches And
 
   The prompt's two hedging lines are the mitigation available at this level. They do not make the verdict more accurate; they change what the wearer is told it means. *"Based on the ingredients I can read, I don't see your allergens listed"* invites the wearer to check a doubtful label themselves. *"This is safe to eat"* does not, and nothing behind it can support that claim.
 - **5 sentences is a request, not a guarantee.** If answers still overrun the glasses' 60 s playback watchdog, the watchdog is the backstop and the number comes down.
+
+## Device verification — run 2026-08-06
+
+Driven through the phone's real capture server with the profile `peanuts, tree nuts, shellfish`.
+
+Same photo, before and after:
+
+| | Before | After |
+|---|---|---|
+| Response size | ~1,000–2,000 B | **571 B** |
+| Length | 10+ bullet points | **3 sentences** |
+| Markdown | `**office workspace**` | **none** |
+| Verdict | — | `"verdict":"UNKNOWN"` |
+| Token in spoken text | — | stripped |
+
+`UNKNOWN` is the correct verdict for that capture — the frame is an office desk, not a food label —
+and it rendered amber on the phone, confirmed by screenshot. The answer now fits the panel without
+scrolling.
+
+**Confirmed:** profile loads and is logged; prompt shortens the answer; markdown is gone; verdict
+parsed and carried; amber renders; token never reaches `speak` or `display`.
+
+**Still needs a real food item:** `UNSAFE` → red and `SAFE` → white. Both are the same code path as
+the verified amber case, differing only in the string the model returns, but neither has been seen
+end to end.
