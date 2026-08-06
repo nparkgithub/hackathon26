@@ -1,0 +1,8 @@
+Open Source Components
+Android TTS: Provides text-to-speech output for voice-based interactions.
+RayNeo Video Showcase: Supports video playback and demonstration on RayNeo smart glasses.
+mDNS (python-zeroconf): Enables automatic device and service discovery on the local network.
+Koog AI Agent: Orchestrates AI workflows through an OpenAI-compatible API.
+Tencent QUIC (TQUIC): Provides secure, reliable, and low-latency multi-path network transport.
+Qwen3-VL 4B, Local: Performs low-latency, on-device vision-language inference.
+Qwen3-VL 8B, Server: Provides server-based vision-language inference with enhanced reasoning capability.
