@@ -67,12 +67,11 @@ pub struct Args {
     pub max_inflight_vlm: usize,
 
     /// Max bytes buffered for a single request body before it's rejected (413).
+    /// Sole size guard now that the body is one JSON document (base64 image
+    /// + prompt, or a pre-formatted OpenAI request) rather than TLV frames
+    /// with their own per-field cap.
     #[arg(long, default_value_t = 32 * 1024 * 1024)]
     pub max_body_bytes: usize,
-
-    /// Max bytes a single frame (image or text) may declare in its length header.
-    #[arg(long, default_value_t = 32 * 1024 * 1024)]
-    pub max_frame_bytes: usize,
 }
 
 pub struct ValidatedArgs {

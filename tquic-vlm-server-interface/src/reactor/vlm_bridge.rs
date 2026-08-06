@@ -8,6 +8,7 @@
 //! drains it opportunistically each loop turn).
 
 use crate::error::VlmError;
+use crate::frames::ParsedRequest;
 use crate::vlm_client::{self, VlmConfig};
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -15,7 +16,11 @@ use std::sync::Arc;
 pub struct VlmJobResult {
     pub conn_idx: u64,
     pub stream_id: u64,
-    pub outcome: Result<String, VlmError>,
+    /// `(response body, response content-type)` -- content-type varies by
+    /// which `ParsedRequest` variant was handled: `text/plain` for the
+    /// extracted-answer `Simple` path, `application/json` for the
+    /// relayed-verbatim `OpenAiPassthrough` path.
+    pub outcome: Result<(String, &'static str), VlmError>,
 }
 
 /// Spawns one worker thread to call the VLM backend and report the result.
@@ -23,14 +28,20 @@ pub struct VlmJobResult {
 pub fn spawn(
     conn_idx: u64,
     stream_id: u64,
-    jpeg: Vec<u8>,
-    prompt: String,
+    request: ParsedRequest,
     cfg: VlmConfig,
     tx: Sender<VlmJobResult>,
     waker: Arc<mio::Waker>,
 ) {
     std::thread::spawn(move || {
-        let outcome = vlm_client::infer(&cfg, &jpeg, &prompt);
+        let outcome = match request {
+            ParsedRequest::Simple { jpeg, prompt } => {
+                vlm_client::infer(&cfg, &jpeg, &prompt).map(|text| (text, "text/plain"))
+            }
+            ParsedRequest::OpenAiPassthrough(body) => {
+                vlm_client::infer_raw(&cfg, body).map(|text| (text, "application/json"))
+            }
+        };
         // If the reactor is gone (process shutting down), the send fails
         // silently -- there's no one left to notify, same rationale as
         // tquic-jni's CmdSender::send.

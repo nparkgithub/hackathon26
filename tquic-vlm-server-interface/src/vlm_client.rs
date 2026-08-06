@@ -36,6 +36,33 @@ struct Message {
     content: Option<String>,
 }
 
+/// Shared HTTP call: POSTs `body` to `{cfg.base_url}/chat/completions` and
+/// maps ureq's status/transport error split onto `VlmError`. Used by both
+/// `infer` (server-constructed request) and `infer_raw` (client-supplied,
+/// forwarded verbatim) -- everything past "get a response back" differs
+/// between the two (parsed-and-extracted vs. relayed-as-is), but the call
+/// itself and its error handling don't.
+fn post_chat_completions(cfg: &VlmConfig, body: serde_json::Value) -> Result<ureq::Response, VlmError> {
+    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
+    let result = ureq::post(&url).timeout(cfg.timeout).send_json(body);
+
+    match result {
+        Ok(resp) => Ok(resp),
+        Err(ureq::Error::Status(status, resp)) => {
+            let body_text = resp.into_string().unwrap_or_default();
+            Err(VlmError::HttpStatus { status, body: body_text })
+        }
+        Err(e @ ureq::Error::Transport(_)) => {
+            let msg = e.to_string();
+            if msg.to_lowercase().contains("timed out") || msg.to_lowercase().contains("timeout") {
+                Err(VlmError::Timeout(cfg.timeout))
+            } else {
+                Err(VlmError::Transport { url, source: Box::new(e) })
+            }
+        }
+    }
+}
+
 /// Calls `{cfg.base_url}/chat/completions` with the image + prompt, returns
 /// the model's answer text. Runs synchronously -- callers dispatch this
 /// onto its own worker thread (see `reactor/vlm_bridge.rs`) so a slow VLM
@@ -54,24 +81,7 @@ pub fn infer(cfg: &VlmConfig, jpeg: &[u8], prompt: &str) -> Result<String, VlmEr
         }],
     });
 
-    let url = format!("{}/chat/completions", cfg.base_url.trim_end_matches('/'));
-    let result = ureq::post(&url).timeout(cfg.timeout).send_json(body);
-
-    let response = match result {
-        Ok(resp) => resp,
-        Err(ureq::Error::Status(status, resp)) => {
-            let body_text = resp.into_string().unwrap_or_default();
-            return Err(VlmError::HttpStatus { status, body: body_text });
-        }
-        Err(e @ ureq::Error::Transport(_)) => {
-            let msg = e.to_string();
-            if msg.to_lowercase().contains("timed out") || msg.to_lowercase().contains("timeout") {
-                return Err(VlmError::Timeout(cfg.timeout));
-            }
-            return Err(VlmError::Transport { url, source: Box::new(e) });
-        }
-    };
-
+    let response = post_chat_completions(cfg, body)?;
     let text = response.into_string().map_err(|_| VlmError::MissingContent)?;
     let parsed: ChatCompletionResponse = serde_json::from_str(&text)?;
     parsed
@@ -81,6 +91,16 @@ pub fn infer(cfg: &VlmConfig, jpeg: &[u8], prompt: &str) -> Result<String, VlmEr
         .and_then(|c| c.message.content)
         .filter(|s| !s.is_empty())
         .ok_or(VlmError::MissingContent)
+}
+
+/// Forwards `body` (already OpenAI-shaped -- built by the *client*, not
+/// this server) to `{cfg.base_url}/chat/completions` verbatim: no field
+/// rewriting, not even `model`. Returns the VLM backend's raw response body
+/// text, unparsed, for verbatim relay back to the phone (it already
+/// understands the OpenAI response shape, since it built the request).
+pub fn infer_raw(cfg: &VlmConfig, body: serde_json::Value) -> Result<String, VlmError> {
+    let response = post_chat_completions(cfg, body)?;
+    response.into_string().map_err(|_| VlmError::MissingContent)
 }
 
 #[cfg(test)]
@@ -164,5 +184,60 @@ mod tests {
             timeout: Duration::from_millis(500),
         };
         assert!(infer(&bad_cfg, b"", "hi").is_err());
+    }
+
+    #[test]
+    fn infer_raw_relays_response_verbatim() {
+        let mut server = mockito::Server::new();
+        let raw_response = r#"{"id":"chatcmpl-1","choices":[{"message":{"content":"a dog"}}],"usage":{"total_tokens":5}}"#;
+        let _m = server
+            .mock("POST", "/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(raw_response)
+            .create();
+
+        let client_body = json!({"model": "whatever-the-client-said", "messages": []});
+        let result = infer_raw(&cfg(server.url()), client_body).unwrap();
+        // Not just "doesn't error" -- the whole point of passthrough is byte
+        // fidelity, unlike infer()'s extract-just-the-content behavior.
+        assert_eq!(result, raw_response);
+    }
+
+    #[test]
+    fn infer_raw_forwards_client_body_unmodified() {
+        let mut server = mockito::Server::new();
+        let _m = server
+            .mock("POST", "/chat/completions")
+            .match_body(mockito::Matcher::Json(json!({"model": "client-chosen-model", "messages": []})))
+            .with_status(200)
+            .with_body(r#"{"choices":[]}"#)
+            .create();
+
+        // cfg's own model is "test-model" -- if infer_raw rewrote it, this
+        // mock's exact-body match would fail and mockito would 501.
+        let client_body = json!({"model": "client-chosen-model", "messages": []});
+        infer_raw(&cfg(server.url()), client_body).unwrap();
+    }
+
+    #[test]
+    fn infer_raw_non_200_status() {
+        let mut server = mockito::Server::new();
+        let _m = server.mock("POST", "/chat/completions").with_status(500).with_body("boom").create();
+
+        match infer_raw(&cfg(server.url()), json!({"model": "m", "messages": []})) {
+            Err(VlmError::HttpStatus { status: 500, body }) => assert_eq!(body, "boom"),
+            other => panic!("expected HttpStatus(500), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn infer_raw_unreachable_backend_is_an_error() {
+        let bad_cfg = VlmConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            model: "test-model".to_string(),
+            timeout: Duration::from_millis(500),
+        };
+        assert!(infer_raw(&bad_cfg, json!({"model": "m", "messages": []})).is_err());
     }
 }

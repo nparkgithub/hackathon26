@@ -9,18 +9,12 @@ use std::fmt;
 
 #[derive(Debug, thiserror::Error)]
 pub enum FrameError {
-    #[error("body too short: need {need} more bytes for a frame header, have {have}")]
-    Truncated { need: usize, have: usize },
-    #[error("expected frame type {expected:#04x}, got {got:#04x}")]
-    WrongType { expected: u8, got: u8 },
-    #[error("frame declares length {len} but only {remaining} bytes remain in the body")]
-    LengthOverflow { len: u64, remaining: usize },
-    #[error("frame length {len} exceeds configured max of {max} bytes")]
-    TooLarge { len: u64, max: usize },
-    #[error("text prompt is not valid UTF-8: {0}")]
-    InvalidUtf8(#[from] std::str::Utf8Error),
-    #[error("{0} unexpected trailing byte(s) after both frames")]
-    TrailingBytes(usize),
+    #[error("invalid request JSON: {0}")]
+    InvalidJson(#[from] serde_json::Error),
+    #[error("invalid base64 in \"jpeg\" field: {0}")]
+    InvalidBase64(#[from] base64::DecodeError),
+    #[error("request body matched neither {{\"jpeg\",\"prompt\"}} nor {{\"model\",\"messages\"}}")]
+    UnrecognizedShape,
 }
 
 #[derive(Debug, thiserror::Error)]
