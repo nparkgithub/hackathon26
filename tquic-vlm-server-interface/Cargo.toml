@@ -1,0 +1,48 @@
+[package]
+name = "tquic-vlm-server-interface"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.90"
+publish = false
+
+[lib]
+name = "tquic_vlm_server_interface"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tquic-vlm-server-interface"
+path = "src/main.rs"
+
+[[bin]]
+name = "tquic-vlm-test-client"
+path = "src/bin/test_client.rs"
+
+[dependencies]
+# Pulled from crates.io: tquic's `include` list ships the full vendored
+# BoringSSL source, so no git submodule fetch is needed.
+tquic = { version = "1.6.0", default-features = false, features = ["h3"] }
+mio = { version = "1", features = ["net", "os-poll"] }
+bytes = "1"
+static_assertions = "1"
+log = "0.4"
+env_logger = "0.11"
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+# Blocking HTTP client: tquic itself is driven by manual polling, not async
+# (no tokio runtime anywhere in this binary) -- ureq is a genuinely
+# synchronous client with no runtime of its own, which is exactly the shape
+# a "run this on its own worker thread" call needs. Do not swap for
+# reqwest/tokio without re-reading vlm_bridge.rs's rationale.
+ureq = { version = "2", features = ["json"] }
+thiserror = "1"
+
+[dev-dependencies]
+mockito = "1"
+
+# No [profile.release] override: tquic-jni's `panic = "unwind"` requirement
+# is JNI-specific (a Rust panic must become a Java exception, not a process
+# abort) and doesn't apply to a standalone binary; its `opt-level = "z"` /
+# `strip = "symbols"` trade speed for .so size, which matters for an APK
+# payload and not at all here. Cargo's defaults are fine.

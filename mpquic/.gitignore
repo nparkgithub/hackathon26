@@ -1,0 +1,10 @@
+# Rust
+mpquic-jni/target/
+tquic/target/
+# Gradle / Android build outputs
+android/.gradle/
+android/.kotlin/
+android/build/
+android/*/build/
+gradle-8.13/
+local.properties
