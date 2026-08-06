@@ -37,6 +37,16 @@ base64 = "0.22"
 # reqwest/tokio without re-reading vlm_bridge.rs's rationale.
 ureq = { version = "2", features = ["json"] }
 thiserror = "1"
+# The MPQUIC tunnel terminus this server also runs (see main.rs) -- reuses
+# mpquic-jni's already-working tunnel/relay-frame handling wholesale rather
+# than reimplementing it; mirrors how mpquic/linux/mpquic-cli already
+# consumes the same crate as a plain Rust library (no JNI/Android involved).
+mpquic-jni = { path = "../mpquic/mpquic-jni" }
+# mpquic_jni::engine::run() takes a mio::Poll/Waker directly, and it's built
+# against mio 0.8 -- a different major version from this crate's own mio 1.x
+# reactor (reactor/mod.rs). Aliased so `mio` (unqualified) keeps meaning 1.x
+# everywhere else; only the mpquic-engine spawn point in main.rs uses this.
+mio08 = { package = "mio", version = "0.8", features = ["net", "os-poll"] }
 
 [dev-dependencies]
 mockito = "1"
