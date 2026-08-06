@@ -154,3 +154,25 @@ The rest is view manipulation with no logic worth mocking; it is verified on dev
 ## Open items
 
 - With the answer in half the box, a ~1000-character response renders small and needs scrolling. That is the accepted cost of keeping the photo visible, which is the reason this layout was chosen over replacing the image.
+
+## Device verification — run 2026-08-06
+
+Driven through the phone's real capture server with a stand-in for the glasses, and confirmed by
+screenshot rather than by log line, since the whole feature is visual.
+
+| # | Scenario | Result |
+|---|---|---|
+| 1 | Capture with a spoken query | ✅ query in quotes at the top, image filling the frame |
+| 2 | Image is upright | ✅ the EXIF path works — without it every capture renders 90° out |
+| 3 | Answer arrives | ✅ image halves, answer appears below it, **both visible** |
+| 4 | Long answer | ✅ overflows into the ScrollView rather than being truncated |
+| 5 | Image-only capture | ✅ header reads "(no question asked)" |
+| 6 | Second capture | ✅ panel resets — no stale answer, image back to full height |
+
+Not yet exercised: error text in the answer area (it takes the same path as any answer, since
+failures already return a `CaptureAnswer`), and the live-streaming regression (needs the glasses
+switched to streaming mode).
+
+**Observation, not a defect:** the answer renders raw markdown — `**office workspace**` shows its
+asterisks. Same underlying issue as the spoken answers being long and markdown-heavy, and the same
+fix: constrain the prompt. Nothing in this panel should be interpreting markup.
