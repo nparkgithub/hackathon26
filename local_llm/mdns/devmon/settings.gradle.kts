@@ -13,5 +13,5 @@ dependencyResolutionManagement {
     }
 }
 
-rootProject.name = "devmon"
+rootProject.name = "koog_agent"
 include(":app")

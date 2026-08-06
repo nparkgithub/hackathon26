@@ -63,11 +63,14 @@ class AdvertiserService(context: Context) {
     private var server: ServerSocket? = null
     private var registration: NsdManager.RegistrationListener? = null
 
-    private fun logLine(msg: String) {
+    /** Also used by HttpIngestServer to surface its activity in the same Log pane. */
+    fun log(msg: String) {
         val line = "[${timeFmt.format(Date())}] $msg"
         Log.i(TAG, line)
         _log.value = (_log.value + line).takeLast(200)
     }
+
+    private fun logLine(msg: String) = log(msg)
 
     fun start() {
         if (_state.value is State.Advertising || _state.value is State.Registering) return
