@@ -16,10 +16,22 @@ pub struct QuicSocket {
     socks: Slab<UdpSocket>,
     addrs: HashMap<SocketAddr, usize>,
     local_addr: SocketAddr,
+    /// Poll-token offset, letting several socket groups (e.g. the tunnel
+    /// endpoint and the local HTTP/3 listener) share one mio registry
+    /// without token collisions.
+    token_base: usize,
 }
 
 impl QuicSocket {
     pub fn new(local: &SocketAddr, registry: &Registry) -> std::io::Result<Self> {
+        Self::new_with_base(local, registry, 0)
+    }
+
+    pub fn new_with_base(
+        local: &SocketAddr,
+        registry: &Registry,
+        token_base: usize,
+    ) -> std::io::Result<Self> {
         let mut socks = Slab::new();
         let mut addrs = HashMap::new();
 
@@ -29,12 +41,13 @@ impl QuicSocket {
         addrs.insert(local_addr, sid);
 
         let socket = socks.get_mut(sid).unwrap();
-        registry.register(socket, Token(sid), Interest::READABLE)?;
+        registry.register(socket, Token(token_base + sid), Interest::READABLE)?;
 
         Ok(Self {
             socks,
             addrs,
             local_addr,
+            token_base,
         })
     }
 
@@ -50,12 +63,12 @@ impl QuicSocket {
         self.addrs.insert(local_addr, sid);
 
         let socket = self.socks.get_mut(sid).unwrap();
-        registry.register(socket, Token(sid), Interest::READABLE)?;
+        registry.register(socket, Token(self.token_base + sid), Interest::READABLE)?;
         Ok(local_addr)
     }
 
     pub fn is_socket_token(&self, token: Token) -> bool {
-        self.socks.contains(token.0)
+        token.0 >= self.token_base && self.socks.contains(token.0 - self.token_base)
     }
 
     pub fn recv_from(
@@ -63,7 +76,11 @@ impl QuicSocket {
         buf: &mut [u8],
         token: Token,
     ) -> std::io::Result<(usize, SocketAddr, SocketAddr)> {
-        let socket = match self.socks.get(token.0) {
+        let socket = match token
+            .0
+            .checked_sub(self.token_base)
+            .and_then(|sid| self.socks.get(sid))
+        {
             Some(socket) => socket,
             None => return Err(std::io::Error::new(ErrorKind::Other, "invalid token")),
         };

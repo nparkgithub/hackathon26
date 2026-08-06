@@ -20,4 +20,14 @@ object TquicBridge {
 
     /** Drain pending log lines / events, joined by U+001E. */
     external fun nativePoll(): String
+
+    /**
+     * Start a local HTTP/3 listener on [port]; requests it receives are
+     * tunneled over the MPQUIC connection and the peer's responses are
+     * returned to the HTTP/3 client. Returns 0 on success.
+     */
+    external fun nativeH3Listen(port: Int, certPath: String, keyPath: String): Int
+
+    /** Stop the local HTTP/3 listener. Returns 0 on success. */
+    external fun nativeH3Stop(): Int
 }

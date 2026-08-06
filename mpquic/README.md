@@ -43,6 +43,15 @@ application protocol imposed) over **Multipath QUIC**.
   MANAGE_EXTERNAL_STORAGE allow`, same for the server); otherwise to
   `/sdcard/Android/data/<pkg>/files/mpquic/`. The actual path is shown
   above the log pane and printed as the first log line.
+- **HTTP/3 intake (client)**: "Start HTTP/3 RX" (default port 47443) runs a
+  real HTTP/3 server on the device. Any standard h3 client can POST to it —
+  including large JPEG bodies — and the request (headers + body) is tunneled
+  over the Multipath QUIC connection to the server app, whose response is
+  returned to that same HTTP/3 client. One tunnel stream per request, so
+  concurrent image uploads don't block each other.
+  `tools/h3_sender.py` (needs `pip install aioquic`) drives it:
+  `python tools/h3_sender.py <client-ip> photo.jpg` or `--size-mb 4` for a
+  generated test JPEG. The Linux CLI has the same feature via `--h3-port`.
 - **Send summary (client)**: once a transfer finishes, the log shows the
   payload size, the bytes each QUIC path carried, and per-interface TX
   counters read from `ifconfig` (wlan*/rmnet_data*). Note: modern Android

@@ -212,6 +212,29 @@
                     android:text="Start UDP RX" />
             </LinearLayout>
 
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="horizontal">
+
+                <EditText
+                    android:id="@+id/h3Port"
+                    android:layout_width="0dp"
+                    android:layout_weight="1"
+                    android:layout_height="wrap_content"
+                    android:hint="HTTP/3 in port"
+                    android:inputType="number"
+                    android:text="47443" />
+
+                <Button
+                    android:id="@+id/h3Btn"
+                    android:layout_width="0dp"
+                    android:layout_weight="2"
+                    android:layout_height="wrap_content"
+                    android:enabled="false"
+                    android:text="Start HTTP/3 RX" />
+            </LinearLayout>
+
             <TextView
                 android:id="@+id/stats"
                 android:layout_width="match_parent"

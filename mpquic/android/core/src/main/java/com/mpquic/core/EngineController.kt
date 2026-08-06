@@ -49,6 +49,13 @@ class EngineController(
 
     fun send(data: ByteArray): Boolean = TquicBridge.nativeSend(data) == 0
 
+    /** Start the local HTTP/3 listener that tunnels requests over MPQUIC. */
+    fun h3Listen(port: Int, certPath: String, keyPath: String): Boolean =
+        TquicBridge.nativeH3Listen(port, certPath, keyPath) == 0
+
+    /** Stop the local HTTP/3 listener. */
+    fun h3Stop(): Boolean = TquicBridge.nativeH3Stop() == 0
+
     private fun drain() {
         val joined = TquicBridge.nativePoll()
         if (joined.isEmpty()) return
