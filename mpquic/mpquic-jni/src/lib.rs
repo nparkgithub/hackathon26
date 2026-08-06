@@ -182,6 +182,7 @@ pub extern "system" fn Java_com_mpquic_core_TquicBridge_nativeH3Listen(
             port: port as u16,
             cert,
             key,
+            idle_timeout_ms: crate::h3relay::DEFAULT_IDLE_TIMEOUT_MS,
         }) {
             Ok(()) => 0,
             Err(e) => {

@@ -256,6 +256,7 @@ pub fn run(o: Options) -> i32 {
                             port,
                             cert: o.cert.clone(),
                             key: o.key.clone(),
+                            idle_timeout_ms: mpquic_jni::h3relay::DEFAULT_IDLE_TIMEOUT_MS,
                         });
                         let _ = waker.wake();
                     }

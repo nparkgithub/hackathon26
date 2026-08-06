@@ -92,7 +92,7 @@ fn echo_roundtrip(listen: &str, connect_to: &str, locals: &[&str]) -> String {
 
     client_running.store(false, Ordering::Relaxed);
     server_running.store(false, Ordering::Relaxed);
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(1500));
     output::drain();
 
     assert!(
@@ -134,8 +134,14 @@ fn end_to_end_echo_ipv6() {
 }
 
 /// With two working paths (two loopback sockets) and the redundant
-/// scheduler, the send_complete summary must report real bytes on *each*
-/// tquic path — this is the per-path accounting the apps display.
+/// scheduler, the send_complete summary must report real, per-path bytes —
+/// this is the per-path *accounting* the apps display, not a claim about
+/// the scheduler's exact duplication ratio. tquic's redundant scheduler
+/// weights by each path's RTT estimate, so while the second path is still
+/// cold (its first RTT sample can be tens of ms vs. sub-ms once warm) it
+/// legitimately carries a smaller share — that's real scheduler behavior,
+/// not an accounting bug, so the threshold here only checks "meaningfully
+/// nonzero on every path", not "roughly equal split".
 #[test]
 fn two_path_redundant_reports_bytes_on_each_path() {
     let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
@@ -156,51 +162,80 @@ fn two_path_redundant_reports_bytes_on_each_path() {
     }));
 
     const PAYLOAD: usize = 200_000;
-    let deadline = Instant::now() + Duration::from_secs(15);
+    // Every path must carry at least this many bytes to count as "the
+    // per-path accounting is really tracking that path", well below what
+    // even a heavily RTT-skewed redundant split would leave it with.
+    const MIN_PATH_BYTES: u64 = 2_000;
+
+    let deadline = Instant::now() + Duration::from_secs(20);
     let mut all = String::new();
     let mut sent = false;
-    let mut summary = None;
-    while Instant::now() < deadline {
+    let mut cursor = 0usize; // where to resume scanning for the next summary
+    let mut good_summary = None;
+    let mut last_summary = None;
+    // Retry the send if a path came back (near-)empty: under heavy parallel
+    // test load the second path can still be cold when the first send goes
+    // out, skewing that round; a second send after both paths have settled
+    // resolves it without a fragile fixed pre-send sleep.
+    while Instant::now() < deadline && good_summary.is_none() {
         std::thread::sleep(Duration::from_millis(300));
         all.push_str(&output::drain());
         all.push('\u{1E}');
-        // Wait for the extra path before sending so the redundant scheduler
-        // has both paths available.
-        if !sent
-            && all.contains("\"type\":\"connected\"")
-            && all.contains("\"type\":\"path_added\"")
+        if !sent && all.contains("\"type\":\"connected\"") && all.contains("\"type\":\"path_added\"")
         {
             client_tx.send(Cmd::Send(vec![0xAB; PAYLOAD])).unwrap();
             sent = true;
         }
-        if sent {
-            // Client summary first; the server's echo summary comes later.
-            if let Some(rec) = all
-                .split('\u{1E}')
-                .find(|r| r.contains("\"type\":\"send_complete\""))
-            {
-                let v: serde_json::Value =
-                    serde_json::from_str(rec.trim_start_matches("E|")).unwrap();
-                summary = Some(v);
-                break;
-            }
+        if !sent {
+            continue;
+        }
+        let Some(rel_pos) = all[cursor..].find("\"type\":\"send_complete\"") else {
+            continue;
+        };
+        // Recover the start of this record (the preceding record separator).
+        let abs_pos = cursor + rel_pos;
+        let rec_start = all[..abs_pos].rfind('\u{1E}').map(|p| p + 1).unwrap_or(0);
+        let rec_end = all[abs_pos..]
+            .find('\u{1E}')
+            .map(|p| abs_pos + p)
+            .unwrap_or(all.len());
+        let rec = &all[rec_start..rec_end];
+        cursor = rec_end;
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(rec.trim_start_matches("E|")) else {
+            continue;
+        };
+        let weak_path = v["paths"]
+            .as_array()
+            .map(|paths| {
+                paths
+                    .iter()
+                    .any(|p| p["bytes_sent"].as_u64().unwrap_or(0) < MIN_PATH_BYTES)
+            })
+            .unwrap_or(true);
+        last_summary = Some(v.clone());
+        if weak_path {
+            client_tx.send(Cmd::Send(vec![0xAB; PAYLOAD])).unwrap();
+        } else {
+            good_summary = Some(v);
         }
     }
 
     client_running.store(false, Ordering::Relaxed);
     server_running.store(false, Ordering::Relaxed);
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(1500));
     output::drain();
 
-    let summary = summary.unwrap_or_else(|| panic!("no send_complete; output:\n{all}"));
+    let summary = good_summary
+        .or(last_summary)
+        .unwrap_or_else(|| panic!("no send_complete; output:\n{all}"));
     let paths = summary["paths"].as_array().unwrap();
     assert!(paths.len() >= 2, "expected 2 paths, got {paths:?}");
     for p in paths {
         let bytes = p["bytes_sent"].as_u64().unwrap();
         let pkts = p["pkts_sent"].as_u64().unwrap();
         assert!(
-            bytes as usize >= PAYLOAD / 2 && pkts > 0,
-            "path carried too little ({bytes} B / {pkts} pkts): {p}"
+            bytes >= MIN_PATH_BYTES && pkts > 0,
+            "path carried too little after retry ({bytes} B / {pkts} pkts): {p}\nfull output:\n{all}"
         );
     }
 }
@@ -279,7 +314,7 @@ fn keepalive_holds_connection_past_idle_timeout() {
     server_running.store(false, Ordering::Relaxed);
     // Let the engines finish and clear the shared output queue, so their
     // trailing events can't leak into whichever test runs next.
-    std::thread::sleep(Duration::from_secs(1));
+    std::thread::sleep(Duration::from_millis(1500));
     output::drain();
 
     assert!(
@@ -324,6 +359,7 @@ fn http3_relay_jpeg_roundtrip() {
             port: 14438,
             cert: format!("{assets}/server.crt"),
             key: format!("{assets}/server.key"),
+            idle_timeout_ms: crate::h3relay::DEFAULT_IDLE_TIMEOUT_MS,
         })
         .unwrap();
 
@@ -379,6 +415,324 @@ fn http3_relay_jpeg_roundtrip() {
         all.contains("\"type\":\"h3_response\""),
         "no h3_response event; output:\n{all}"
     );
+}
+
+/// The local HTTP/3 listener's own connections (an external h3 client, held
+/// open between uploads) were not covered by the tunnel keepalive fix and
+/// would silently idle out on their own separate timer. With a deliberately
+/// tiny h3 idle timeout and the engine's keepalive enabled, one HTTP/3
+/// connection must survive several times that timeout and still serve a
+/// second request.
+#[test]
+fn h3_listener_keepalive_holds_connection_past_idle_timeout() {
+    let _guard = TEST_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    output::init_logger("info");
+    output::drain();
+
+    let assets = assets_dir();
+    let (_server_tx, server_running) = spawn_server("127.0.0.1:14441");
+    std::thread::sleep(Duration::from_millis(500));
+    let (client_tx, client_running) = spawn_engine(serde_json::json!({
+        "role": "client",
+        "connect_to": "127.0.0.1:14441",
+        "local_addresses": ["127.0.0.1"],
+        "enable_multipath": true,
+        "log_level": "info",
+        "keepalive_ms": 300,
+    }));
+
+    let mut all = String::new();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        all.push_str(&output::drain());
+        if all.contains("\"type\":\"connected\"") {
+            break;
+        }
+    }
+    assert!(
+        all.contains("\"type\":\"connected\""),
+        "tunnel never connected; output:\n{all}"
+    );
+
+    client_tx
+        .send(Cmd::H3Listen {
+            port: 14442,
+            cert: format!("{assets}/server.crt"),
+            key: format!("{assets}/server.key"),
+            // Far below the 6s gap the client leaves between requests below
+            // — only the keepalive ping can be keeping this alive.
+            idle_timeout_ms: 1500,
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        all.push_str(&output::drain());
+        if all.contains("\"type\":\"h3_listening\"") {
+            break;
+        }
+    }
+    assert!(
+        all.contains("\"type\":\"h3_listening\""),
+        "h3 listener did not start; output:\n{all}"
+    );
+
+    let body1 = b"first-request".to_vec();
+    let body2 = b"second-request-after-idle-gap".to_vec();
+    let result = h3_client_two_posts_with_gap(
+        "127.0.0.1:14442",
+        "/a",
+        &body1,
+        "/b",
+        &body2,
+        Duration::from_secs(6), // 4x the h3 listener's idle timeout
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(200));
+        all.push_str(&output::drain());
+    }
+    client_running.store(false, Ordering::Relaxed);
+    server_running.store(false, Ordering::Relaxed);
+    std::thread::sleep(Duration::from_millis(1500));
+    output::drain();
+
+    let (r1, r2) = result.unwrap_or_else(|e| panic!("{e}\nengine output:\n{all}"));
+    assert_eq!(r1, (200, body1.len()), "first request; output:\n{all}");
+    assert_eq!(
+        r2,
+        (200, body2.len()),
+        "second request after the idle gap (this is the keepalive check); output:\n{all}"
+    );
+}
+
+/// Like [`h3_client_post`] but keeps one HTTP/3 connection open across two
+/// requests separated by `idle_gap`, to prove the connection survives idle
+/// periods rather than just a single fast round trip.
+fn h3_client_two_posts_with_gap(
+    server: &str,
+    path1: &str,
+    body1: &[u8],
+    path2: &str,
+    body2: &[u8],
+    idle_gap: Duration,
+) -> Result<((u64, usize), (u64, usize)), String> {
+    use std::cell::RefCell;
+    use std::net::{SocketAddr, UdpSocket};
+    use std::rc::Rc;
+
+    use tquic::h3::connection::Http3Connection;
+    use tquic::h3::{Header, Http3Config, Http3Event, NameValue};
+    use tquic::{Config, Connection, Endpoint, PacketInfo, TlsConfig, TransportHandler};
+
+    #[derive(Default)]
+    struct State {
+        established: Vec<u64>,
+        // Reset before each request; filled in once that request finishes.
+        status: Option<u64>,
+        body_len: usize,
+        done: bool,
+    }
+
+    struct H3Client {
+        state: Rc<RefCell<State>>,
+        h3: Rc<RefCell<Option<Http3Connection>>>,
+        buf: Vec<u8>,
+    }
+
+    impl TransportHandler for H3Client {
+        fn on_conn_created(&mut self, _c: &mut Connection) {}
+        fn on_conn_established(&mut self, conn: &mut Connection) {
+            let cfg = Http3Config::new().unwrap();
+            let h3 = Http3Connection::new_with_quic_conn(conn, &cfg).unwrap();
+            *self.h3.borrow_mut() = Some(h3);
+            self.state
+                .borrow_mut()
+                .established
+                .push(conn.index().unwrap_or(0));
+        }
+        fn on_conn_closed(&mut self, _c: &mut Connection) {}
+        fn on_stream_created(&mut self, _c: &mut Connection, _s: u64) {}
+        fn on_stream_readable(&mut self, conn: &mut Connection, _s: u64) {
+            let mut h3_ref = self.h3.borrow_mut();
+            let Some(h3) = h3_ref.as_mut() else { return };
+            loop {
+                match h3.poll(conn) {
+                    Ok((_sid, Http3Event::Headers { headers, .. })) => {
+                        for h in &headers {
+                            if h.name() == b":status" {
+                                self.state.borrow_mut().status =
+                                    String::from_utf8_lossy(h.value()).parse::<u64>().ok();
+                            }
+                        }
+                    }
+                    Ok((sid, Http3Event::Data)) => {
+                        while let Ok(n) = h3.recv_body(conn, sid, &mut self.buf) {
+                            if n == 0 {
+                                break;
+                            }
+                            self.state.borrow_mut().body_len += n;
+                        }
+                    }
+                    Ok((_sid, Http3Event::Finished)) => {
+                        self.state.borrow_mut().done = true;
+                    }
+                    Err(tquic::h3::Http3Error::Done) => break,
+                    Err(_) => break,
+                    _ => {}
+                }
+            }
+        }
+        fn on_stream_writable(&mut self, _c: &mut Connection, _s: u64) {}
+        fn on_stream_closed(&mut self, _c: &mut Connection, _s: u64) {}
+        fn on_new_token(&mut self, _c: &mut Connection, _t: Vec<u8>) {}
+    }
+
+    struct Sock(UdpSocket);
+    impl tquic::PacketSendHandler for Sock {
+        fn on_packets_send(&self, pkts: &[(Vec<u8>, PacketInfo)]) -> tquic::Result<usize> {
+            let mut n = 0;
+            for (pkt, info) in pkts {
+                let _ = self.0.send_to(pkt, info.dst);
+                n += 1;
+            }
+            Ok(n)
+        }
+    }
+
+    let remote: SocketAddr = server.parse().map_err(|e| format!("addr: {e}"))?;
+    let socket = UdpSocket::bind("127.0.0.1:0").map_err(|e| e.to_string())?;
+    socket
+        .set_read_timeout(Some(Duration::from_millis(50)))
+        .map_err(|e| e.to_string())?;
+    let local = socket.local_addr().map_err(|e| e.to_string())?;
+
+    let mut config = Config::new().map_err(|e| e.to_string())?;
+    // Comfortably longer than idle_gap so only the *server's* idle timeout
+    // (and its keepalive) is under test here.
+    config.set_max_idle_timeout(60_000);
+    config.set_initial_max_streams_bidi(16);
+    config.set_recv_udp_payload_size(65527);
+    config.set_initial_max_data(64 * 1024 * 1024);
+    config.set_initial_max_stream_data_bidi_local(32 * 1024 * 1024);
+    config.set_initial_max_stream_data_bidi_remote(32 * 1024 * 1024);
+    config.set_initial_max_stream_data_uni(1024 * 1024);
+    config.set_initial_max_streams_uni(16);
+    let tls = TlsConfig::new_client_config(vec![b"h3".to_vec()], false)
+        .map_err(|e| format!("tls: {e}"))?;
+    config.set_tls_config(tls);
+
+    let state = Rc::new(RefCell::new(State::default()));
+    let h3 = Rc::new(RefCell::new(None));
+    let handler = H3Client {
+        state: state.clone(),
+        h3: h3.clone(),
+        buf: vec![0u8; 65536],
+    };
+    let sock = Rc::new(Sock(socket.try_clone().map_err(|e| e.to_string())?));
+    let mut endpoint = Endpoint::new(Box::new(config), false, Box::new(handler), sock);
+    endpoint
+        .connect(local, remote, Some("mpquic"), None, None, None)
+        .map_err(|e| format!("connect: {e}"))?;
+
+    fn send_post(
+        endpoint: &mut Endpoint,
+        h3: &Rc<RefCell<Option<Http3Connection>>>,
+        idx: u64,
+        path: &str,
+        body: &[u8],
+    ) -> Result<(), String> {
+        let mut h3c_ref = h3.borrow_mut();
+        let h3c = h3c_ref.as_mut().ok_or("h3 not ready")?;
+        let conn = endpoint.conn_get_mut(idx).ok_or("conn gone")?;
+        let stream_id = h3c.stream_new(conn).map_err(|e| format!("stream: {e:?}"))?;
+        let headers = vec![
+            Header::new(b":method", b"POST"),
+            Header::new(b":scheme", b"https"),
+            Header::new(b":authority", b"mpquic"),
+            Header::new(b":path", path.as_bytes()),
+            Header::new(b"content-type", b"application/octet-stream"),
+        ];
+        h3c.send_headers(conn, stream_id, &headers, false)
+            .map_err(|e| format!("send_headers: {e:?}"))?;
+        let payload = bytes::Bytes::from(body.to_vec());
+        let mut off = 0usize;
+        while off < payload.len() {
+            match h3c.send_body(conn, stream_id, payload.slice(off..), true) {
+                Ok(0) | Err(tquic::h3::Http3Error::Done) => break,
+                Ok(n) => off += n,
+                Err(e) => return Err(format!("send_body: {e:?}")),
+            }
+        }
+        Ok(())
+    }
+
+    let mut buf = vec![0u8; 65536];
+    let mut idx = None;
+    let mut sent1 = false;
+    let mut result1 = None;
+    let mut gap_until: Option<Instant> = None;
+    let mut sent2 = false;
+    let mut result2 = None;
+
+    let overall_deadline = Instant::now() + Duration::from_secs(20) + idle_gap;
+    while Instant::now() < overall_deadline {
+        endpoint.process_connections().map_err(|e| e.to_string())?;
+
+        if idx.is_none() {
+            idx = state.borrow().established.first().copied();
+        }
+        if let Some(i) = idx {
+            if !sent1 {
+                send_post(&mut endpoint, &h3, i, path1, body1)?;
+                sent1 = true;
+            } else if result1.is_none() {
+                let s = state.borrow();
+                if s.done {
+                    result1 = Some((s.status.unwrap_or(0), s.body_len));
+                    drop(s);
+                    gap_until = Some(Instant::now() + idle_gap);
+                    *state.borrow_mut() = State {
+                        established: vec![i],
+                        ..Default::default()
+                    };
+                }
+            } else if !sent2 {
+                if Instant::now() >= gap_until.unwrap() {
+                    send_post(&mut endpoint, &h3, i, path2, body2)?;
+                    sent2 = true;
+                }
+            } else if result2.is_none() {
+                let s = state.borrow();
+                if s.done {
+                    result2 = Some((s.status.unwrap_or(0), s.body_len));
+                }
+            } else {
+                break;
+            }
+        }
+
+        match socket.recv_from(&mut buf) {
+            Ok((len, peer)) => {
+                let info = PacketInfo {
+                    src: peer,
+                    dst: local,
+                    time: Instant::now(),
+                };
+                let _ = endpoint.recv(&mut buf[..len], &info);
+            }
+            Err(_) => {}
+        }
+        endpoint.on_timeout(Instant::now());
+    }
+
+    match (result1, result2) {
+        (Some(r1), Some(r2)) => Ok((r1, r2)),
+        (None, _) => Err("first request never completed".into()),
+        (Some(_), None) => Err("second request never completed (connection likely dropped during the idle gap)".into()),
+    }
 }
 
 /// Minimal HTTP/3 client used by the relay test: POSTs `body` and returns

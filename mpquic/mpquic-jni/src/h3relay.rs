@@ -33,6 +33,11 @@ use crate::socket::QuicSocket;
 pub const MAGIC_REQ: &[u8; 4] = b"H3RQ";
 pub const MAGIC_RES: &[u8; 4] = b"H3RS";
 
+/// Default idle timeout for the local HTTP/3 listener's connections. Matches
+/// the tunnel's default so neither side times out first; both are meant to
+/// be held open by keep-alive pings rather than this ceiling in practice.
+pub const DEFAULT_IDLE_TIMEOUT_MS: u64 = 300_000;
+
 /// A request or response carried across the tunnel.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RelayFrame {
@@ -256,11 +261,14 @@ impl H3Listener {
         key: &str,
         registry: &Registry,
         token_base: usize,
+        idle_timeout_ms: u64,
     ) -> Result<Self, String> {
         let mut config = Config::new().map_err(|e| e.to_string())?;
         // Generous: an external client may hold the connection open between
-        // uploads, and a slow multi-MB POST must not trip the timer.
-        config.set_max_idle_timeout(300_000);
+        // uploads, and a slow multi-MB POST must not trip the timer. In
+        // practice the engine's keep-alive pings (see engine.rs) are what
+        // actually keep this from ever firing; this is the backstop.
+        config.set_max_idle_timeout(idle_timeout_ms);
         config.set_initial_max_streams_bidi(128);
         config.set_recv_udp_payload_size(65527);
         // Large JPEG bodies: allow generous stream/connection flow control.

@@ -39,6 +39,7 @@ pub enum Cmd {
         port: u16,
         cert: String,
         key: String,
+        idle_timeout_ms: u64,
     },
     /// Stop the local HTTP/3 listener.
     H3Stop,
@@ -710,13 +711,14 @@ fn run_inner(
                         }
                     }
                 }
-                Ok(Cmd::H3Listen { port, cert, key }) => {
+                Ok(Cmd::H3Listen { port, cert, key, idle_timeout_ms }) => {
                     match crate::h3relay::H3Listener::new(
                         port,
                         &cert,
                         &key,
                         poll.registry(),
                         H3_TOKEN_BASE,
+                        idle_timeout_ms,
                     ) {
                         Ok(l) => {
                             info!("h3 listener started on 0.0.0.0:{port}");
@@ -1040,6 +1042,34 @@ fn run_inner(
                         let _ = conn.stream_want_write(stream_id, false);
                     }
                 }
+
+                // The local HTTP/3 listener's connections (an external h3
+                // client, e.g. a desktop test tool held open between
+                // uploads) have their own, separate idle timer that this
+                // loop did not previously touch — they would drop on their
+                // own schedule even while the tunnel above stayed healthy.
+                if let Some(l) = h3_listener.as_mut() {
+                    let h3_indices: Vec<u64> =
+                        l.shared.borrow().h3_conns.keys().copied().collect();
+                    for index in h3_indices {
+                        let Some(conn) = l.endpoint.conn_get_mut(index) else {
+                            continue;
+                        };
+                        if let Err(e) = conn.ping(None) {
+                            debug!("h3 keepalive ping failed on conn {index}: {e:?}");
+                            continue;
+                        }
+                        // HTTP/3 forbids server-initiated bidi streams, so
+                        // there is no legitimate stream to reuse here as the
+                        // tickable nudge above does. stream_want_write marks
+                        // the connection tickable before it looks the id up,
+                        // so an id that doesn't exist still works and never
+                        // touches the wire (Streams::want_write just returns
+                        // Error::Done for it).
+                        let _ = conn.stream_want_write(0, false);
+                    }
+                }
+
                 last_keepalive = Instant::now();
             }
         }
