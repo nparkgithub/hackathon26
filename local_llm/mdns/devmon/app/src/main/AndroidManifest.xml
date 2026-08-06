@@ -6,6 +6,12 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
+    <!-- Foreground service so mDNS advertising + the HTTP ingest server survive the app
+         leaving the foreground; see DevMonForegroundService / DevMonRuntime. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Android 13+ gates NsdManager discovery behind a nearby-devices permission.
          usesPermissionFlags="neverForLocation" avoids pulling in location. -->
     <uses-permission
@@ -16,7 +22,7 @@
 
     <application
         android:allowBackup="true"
-        android:label="DevMon"
+        android:label="koog_agent"
         android:supportsRtl="true"
         android:theme="@style/Theme.Material3.DayNight.NoActionBar"
         android:usesCleartextTraffic="true">
@@ -24,12 +30,21 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:label="DevMon">
+            android:label="koog_agent">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <service
+            android:name=".DevMonForegroundService"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Local network device monitor: mDNS advertising and TCP/HTTP telemetry ingest from LAN peers" />
+        </service>
     </application>
 
 </manifest>

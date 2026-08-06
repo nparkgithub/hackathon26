@@ -2,12 +2,14 @@ package com.example.devmon
 
 import android.Manifest
 import android.content.Context
+import android.content.Intent
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
 import android.net.Uri
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.repeatOnLifecycle
@@ -23,6 +25,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var ui: ActivityMainBinding
     private lateinit var advertiser: AdvertiserService
+    private lateinit var httpIngest: HttpIngestServer
     private var selectedImage: ByteArray? = null
     private var selectedImageMimeType: String = "image/jpeg"
 
@@ -45,12 +48,24 @@ class MainActivity : AppCompatActivity() {
         ActivityResultContracts.RequestMultiplePermissions()
     ) { advertiser.start() }   // start regardless; advertising works without it on most builds
 
+    // Best-effort: denying this only hides the foreground-service notification, the
+    // sockets themselves are unaffected.
+    private val requestNotificationPerm = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) {}
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         ui = ActivityMainBinding.inflate(layoutInflater)
         setContentView(ui.root)
 
-        advertiser = AdvertiserService(this)
+        DevMonRuntime.ensureStarted(this)
+        advertiser = DevMonRuntime.advertiser
+        httpIngest = DevMonRuntime.httpIngest
+        if (Build.VERSION.SDK_INT >= 33) {
+            requestNotificationPerm.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        ContextCompat.startForegroundService(this, Intent(this, DevMonForegroundService::class.java))
 
         ui.btnToggle.setOnClickListener {
             if (advertiser.state.value is AdvertiserService.State.Advertising) {
@@ -67,12 +82,19 @@ class MainActivity : AppCompatActivity() {
 
         lifecycleScope.launch {
             repeatOnLifecycle(Lifecycle.State.STARTED) {
-                combine(advertiser.state, advertiser.peers, advertiser.log) { s, p, l ->
-                    Triple(s, p, l)
-                }.collect { (state, peers, log) -> render(state, peers, log) }
+                combine(advertiser.state, advertiser.peers, advertiser.log, httpIngest.state) { s, p, l, i ->
+                    Snapshot(s, p, l, i)
+                }.collect { (state, peers, log, ingest) -> render(state, peers, log, ingest) }
             }
         }
     }
+
+    private data class Snapshot(
+        val state: AdvertiserService.State,
+        val peers: Map<String, Telemetry>,
+        val log: List<String>,
+        val ingest: HttpIngestServer.State,
+    )
 
     private fun ensurePermissionsThenStart() {
         if (Build.VERSION.SDK_INT >= 33) {
@@ -86,14 +108,21 @@ class MainActivity : AppCompatActivity() {
         state: AdvertiserService.State,
         peers: Map<String, Telemetry>,
         log: List<String>,
+        ingest: HttpIngestServer.State,
     ) {
-        ui.txtStatus.text = when (state) {
+        val advertisingLine = when (state) {
             is AdvertiserService.State.Idle -> "Idle - not advertising"
             is AdvertiserService.State.Registering -> "Registering..."
             is AdvertiserService.State.Advertising ->
                 "Advertising '${state.serviceName}'\n${AdvertiserService.SERVICE_TYPE} on port ${state.port}"
             is AdvertiserService.State.Failed -> "Failed: ${state.reason}"
         }
+        val ingestLine = when (ingest) {
+            is HttpIngestServer.State.Idle -> "HTTP ingest: not running"
+            is HttpIngestServer.State.Listening -> "HTTP ingest: listening on :${ingest.port} (POST /analyze)"
+            is HttpIngestServer.State.Failed -> "HTTP ingest: FAILED - ${ingest.reason}"
+        }
+        ui.txtStatus.text = "$advertisingLine\n$ingestLine"
         ui.btnToggle.text =
             if (state is AdvertiserService.State.Advertising) "Stop advertising" else "Start advertising"
 
@@ -181,17 +210,11 @@ class MainActivity : AppCompatActivity() {
                 "WiFi: $ssid\n" + addrs.joinToString("\n")
     }
 
-    override fun onDestroy() {
-        super.onDestroy()
-        advertiser.shutdown()
-    }
+    // Note: DevMonRuntime is deliberately NOT shut down here — it must outlive this Activity so
+    // advertising + the HTTP ingest server keep running in the background. It only stops via
+    // DevMonForegroundService's notification Stop action.
 
     private companion object {
         const val MAX_IMAGE_BYTES = 8 * 1024 * 1024
     }
-
-    private fun Throwable.describeCauseChain(): String =
-        generateSequence(this) { it.cause }
-            .take(4)
-            .joinToString(" <- ") { it.message ?: it.javaClass.simpleName }
 }
