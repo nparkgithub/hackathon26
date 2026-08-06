@@ -7,6 +7,7 @@
 
 pub mod config;
 pub mod engine;
+pub mod h3relay;
 pub mod output;
 pub mod socket;
 #[cfg(test)]
@@ -139,6 +140,67 @@ pub extern "system" fn Java_com_mpquic_core_TquicBridge_nativeSend(
             }
         }
     }));
+    result.unwrap_or(-3)
+}
+
+fn engine_cmd(cmd: Cmd) -> Result<(), String> {
+    let guard = ENGINE.lock().unwrap();
+    match guard.as_ref() {
+        Some(handle) => {
+            handle.cmd_tx.send(cmd).map_err(|e| e.to_string())?;
+            handle.waker.wake().map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        None => Err("engine not running".into()),
+    }
+}
+
+/// Start the local HTTP/3 listener whose requests are tunneled over MPQUIC.
+#[no_mangle]
+pub extern "system" fn Java_com_mpquic_core_TquicBridge_nativeH3Listen(
+    mut env: JNIEnv,
+    _cls: JClass,
+    port: jint,
+    cert: JString,
+    key: JString,
+) -> jint {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let cert: String = match env.get_string(&cert) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let key: String = match env.get_string(&key) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        if !(1..=65535).contains(&port) {
+            output::push(format!("L|E|invalid h3 port {port}"));
+            return -1;
+        }
+        match engine_cmd(Cmd::H3Listen {
+            port: port as u16,
+            cert,
+            key,
+        }) {
+            Ok(()) => 0,
+            Err(e) => {
+                output::push(format!("L|E|h3 listen failed: {e}"));
+                -2
+            }
+        }
+    }));
+    result.unwrap_or(-3)
+}
+
+#[no_mangle]
+pub extern "system" fn Java_com_mpquic_core_TquicBridge_nativeH3Stop(
+    _env: JNIEnv,
+    _cls: JClass,
+) -> jint {
+    let result = catch_unwind(|| match engine_cmd(Cmd::H3Stop) {
+        Ok(()) => 0,
+        Err(_) => -2,
+    });
     result.unwrap_or(-3)
 }
 

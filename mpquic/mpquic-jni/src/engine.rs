@@ -25,11 +25,23 @@ use crate::socket::QuicSocket;
 const WAKER_TOKEN: Token = Token(usize::MAX - 1);
 const MAX_BUF_SIZE: usize = 65536;
 const STATS_INTERVAL: Duration = Duration::from_secs(1);
+/// Poll-token space for the local HTTP/3 listener's sockets, kept clear of
+/// the tunnel endpoint's tokens (which start at 0).
+const H3_TOKEN_BASE: usize = 1 << 20;
 
 pub enum Cmd {
     /// Send opaque bytes to the peer (client: on its connection; server:
     /// broadcast to all established connections).
     Send(Vec<u8>),
+    /// Start the local HTTP/3 listener on this port; its requests are
+    /// tunneled over the MPQUIC connection and answers relayed back.
+    H3Listen {
+        port: u16,
+        cert: String,
+        key: String,
+    },
+    /// Stop the local HTTP/3 listener.
+    H3Stop,
     Close,
 }
 
@@ -42,12 +54,27 @@ pub struct EngineHandle {
 
 pub static ENGINE: Mutex<Option<EngineHandle>> = Mutex::new(None);
 
+/// A tunnel stream currently carrying one relayed HTTP/3 request (client
+/// side: which local h3 stream the answer belongs to).
+#[derive(Clone, Copy)]
+pub struct RelayRoute {
+    pub h3_conn_index: u64,
+    pub h3_stream_id: u64,
+}
+
 /// State shared between the transport callbacks and the poll loop.
 #[derive(Default)]
 struct Shared {
     is_server: bool,
     echo: bool,
     remote: Option<SocketAddr>,
+    /// Tunnel streams that carry relayed HTTP/3 traffic, and the partially
+    /// received frame bytes for each.
+    relay_buf: HashMap<(u64, u64), Vec<u8>>,
+    /// Client: tunnel stream -> local h3 request awaiting its response.
+    relay_routes: HashMap<(u64, u64), RelayRoute>,
+    /// Frames fully received on the tunnel, drained by the poll loop.
+    relay_inbox: Vec<(u64, u64, crate::h3relay::RelayFrame)>,
     /// Extra client local addresses to add as paths after handshake.
     extra_paths: Vec<SocketAddr>,
     /// Established connection indexes.
@@ -187,10 +214,47 @@ impl TransportHandler for Handler {
 
     fn on_stream_readable(&mut self, conn: &mut Connection, stream_id: u64) {
         let mut shared = self.shared.borrow_mut();
+        let index = conn.index().unwrap_or(u64::MAX);
+        let key = (index, stream_id);
         loop {
             match conn.stream_read(stream_id, &mut self.buf) {
                 Ok((n, fin)) => {
                     shared.total_rx += n as u64;
+
+                    // Relay stream? Either already classified as one, or the
+                    // stream opens with a relay frame magic.
+                    let is_relay = shared.relay_buf.contains_key(&key)
+                        || shared.relay_routes.contains_key(&key)
+                        || (n >= 4
+                            && (&self.buf[..4] == crate::h3relay::MAGIC_REQ
+                                || &self.buf[..4] == crate::h3relay::MAGIC_RES));
+                    if is_relay {
+                        if n > 0 {
+                            shared
+                                .relay_buf
+                                .entry(key)
+                                .or_default()
+                                .extend_from_slice(&self.buf[..n]);
+                        }
+                        // Drain every complete frame out of the buffer.
+                        loop {
+                            let parsed = shared
+                                .relay_buf
+                                .get(&key)
+                                .and_then(|b| crate::h3relay::RelayFrame::parse(b));
+                            let Some((frame, used)) = parsed else { break };
+                            if let Some(b) = shared.relay_buf.get_mut(&key) {
+                                b.drain(..used);
+                            }
+                            shared.relay_inbox.push((index, stream_id, frame));
+                        }
+                        if fin {
+                            shared.relay_buf.remove(&key);
+                            break;
+                        }
+                        continue;
+                    }
+
                     if n > 0 {
                         let preview: String = String::from_utf8_lossy(&self.buf[..n.min(64)])
                             .chars()
@@ -257,6 +321,11 @@ fn build_quic_config(cfg: &BridgeConfig, is_server: bool) -> Result<Config, Stri
     config.set_max_idle_timeout(cfg.idle_timeout_ms);
     config.set_initial_max_streams_bidi(64);
     config.set_recv_udp_payload_size(65527);
+    // Multi-MB payloads (e.g. relayed JPEG uploads) need generous flow
+    // control, otherwise transfers stall waiting on window updates.
+    config.set_initial_max_data(64 * 1024 * 1024);
+    config.set_initial_max_stream_data_bidi_local(32 * 1024 * 1024);
+    config.set_initial_max_stream_data_bidi_remote(32 * 1024 * 1024);
     config.set_congestion_control_algorithm(cfg.congestion_algor());
     config.enable_multipath(cfg.enable_multipath);
     config.set_multipath_algorithm(cfg.multipath_algor());
@@ -501,11 +570,17 @@ fn run_inner(
     let mut events = Events::with_capacity(1024);
     let mut recv_buf = vec![0u8; MAX_BUF_SIZE];
     let mut last_stats = Instant::now();
+    let mut h3_listener: Option<crate::h3relay::H3Listener> = None;
 
     loop {
         endpoint
             .process_connections()
             .map_err(|e| format!("process_connections: {e}"))?;
+        if let Some(l) = h3_listener.as_mut() {
+            if let Err(e) = l.endpoint.process_connections() {
+                error!("h3 process_connections: {e:?}");
+            }
+        }
 
         // Handle commands from the app.
         loop {
@@ -558,6 +633,36 @@ fn run_inner(
                         }
                     }
                 }
+                Ok(Cmd::H3Listen { port, cert, key }) => {
+                    match crate::h3relay::H3Listener::new(
+                        port,
+                        &cert,
+                        &key,
+                        poll.registry(),
+                        H3_TOKEN_BASE,
+                    ) {
+                        Ok(l) => {
+                            info!("h3 listener started on 0.0.0.0:{port}");
+                            output::push_event(
+                                json!({"type": "h3_listening", "port": port}).to_string(),
+                            );
+                            h3_listener = Some(l);
+                        }
+                        Err(e) => {
+                            error!("h3 listener failed: {e}");
+                            output::push_event(
+                                json!({"type": "h3_error", "message": e}).to_string(),
+                            );
+                        }
+                    }
+                }
+                Ok(Cmd::H3Stop) => {
+                    if let Some(l) = h3_listener.take() {
+                        drop(l);
+                        info!("h3 listener stopped");
+                        output::push_event(json!({"type": "h3_stopped"}).to_string());
+                    }
+                }
                 Ok(Cmd::Close) => {
                     running.store(false, Ordering::Relaxed);
                 }
@@ -569,15 +674,153 @@ fn run_inner(
             }
         }
 
+        // Relay complete HTTP/3 requests from the local listener over the
+        // tunnel: one fresh bidi stream per request, so large image uploads
+        // don't block each other and the reply matches its request.
+        if let Some(l) = h3_listener.as_mut() {
+            let completed: Vec<_> = std::mem::take(&mut l.shared.borrow_mut().completed);
+            for (h3_conn_index, h3_stream_id, frame) in completed {
+                let conns = shared.borrow().conns.clone();
+                let Some(&index) = conns.first() else {
+                    output::push_event(
+                        json!({"type": "h3_error", "message": "tunnel not connected"}).to_string(),
+                    );
+                    continue;
+                };
+                let Some(conn) = endpoint.conn_get_mut(index) else {
+                    continue;
+                };
+                let stream_id = match conn.stream_bidi_new(0, true) {
+                    Ok(id) => id,
+                    Err(e) => {
+                        error!("h3 relay: stream_bidi_new: {e:?}");
+                        continue;
+                    }
+                };
+                let bytes = frame.encode();
+                let body_len = frame.body.len();
+                {
+                    let mut s = shared.borrow_mut();
+                    s.relay_routes.insert(
+                        (index, stream_id),
+                        RelayRoute {
+                            h3_conn_index,
+                            h3_stream_id,
+                        },
+                    );
+                    s.pending
+                        .entry((index, stream_id))
+                        .or_default()
+                        .extend_from_slice(&bytes);
+                    Handler::flush_pending(&mut s, conn, stream_id);
+                }
+                output::push_event(
+                    json!({
+                        "type": "h3_request",
+                        "method": frame.header(":method").unwrap_or(""),
+                        "path": frame.header(":path").unwrap_or(""),
+                        "content_type": frame.header("content-type").unwrap_or(""),
+                        "bytes": body_len,
+                        "tunnel_stream": stream_id,
+                    })
+                    .to_string(),
+                );
+            }
+        }
+
+        // Relay frames that arrived over the tunnel.
+        let inbox: Vec<_> = std::mem::take(&mut shared.borrow_mut().relay_inbox);
+        for (index, stream_id, frame) in inbox {
+            if frame.is_request {
+                // Server side: answer the tunneled HTTP/3 request.
+                let body_len = frame.body.len();
+                output::push_event(
+                    json!({
+                        "type": "h3_request",
+                        "method": frame.header(":method").unwrap_or(""),
+                        "path": frame.header(":path").unwrap_or(""),
+                        "content_type": frame.header("content-type").unwrap_or(""),
+                        "bytes": body_len,
+                        "tunnel_stream": stream_id,
+                    })
+                    .to_string(),
+                );
+                let echo = shared.borrow().echo;
+                let response = crate::h3relay::RelayFrame {
+                    is_request: false,
+                    headers: vec![
+                        (":status".into(), "200".into()),
+                        (
+                            "content-type".into(),
+                            frame
+                                .header("content-type")
+                                .unwrap_or("application/octet-stream")
+                                .to_string(),
+                        ),
+                        ("x-mpquic-received".into(), body_len.to_string()),
+                    ],
+                    // Echo mode returns the payload (e.g. the JPEG) as-is;
+                    // otherwise just acknowledge the byte count.
+                    body: if echo {
+                        frame.body
+                    } else {
+                        format!("received {body_len} bytes").into_bytes()
+                    },
+                };
+                let bytes = response.encode();
+                if let Some(conn) = endpoint.conn_get_mut(index) {
+                    let mut s = shared.borrow_mut();
+                    s.pending
+                        .entry((index, stream_id))
+                        .or_default()
+                        .extend_from_slice(&bytes);
+                    Handler::flush_pending(&mut s, conn, stream_id);
+                }
+                output::push_event(
+                    json!({
+                        "type": "h3_response",
+                        "status": 200,
+                        "bytes": response.body.len(),
+                        "tunnel_stream": stream_id,
+                    })
+                    .to_string(),
+                );
+            } else {
+                // Client side: hand the response back to the local HTTP/3
+                // client that made the request.
+                let route = shared.borrow_mut().relay_routes.remove(&(index, stream_id));
+                match (route, h3_listener.as_mut()) {
+                    (Some(route), Some(l)) => {
+                        output::push_event(
+                            json!({
+                                "type": "h3_response",
+                                "status": frame.header(":status").unwrap_or("200"),
+                                "bytes": frame.body.len(),
+                                "tunnel_stream": stream_id,
+                            })
+                            .to_string(),
+                        );
+                        l.send_response(route.h3_conn_index, route.h3_stream_id, &frame);
+                    }
+                    _ => error!("h3 relay: no route for response on stream {stream_id}"),
+                }
+            }
+        }
+
         if !running.load(Ordering::Relaxed) {
             endpoint.close(true);
             return Ok(());
         }
 
-        let timeout = endpoint
+        let mut timeout = endpoint
             .timeout()
             .map(|t| t.min(STATS_INTERVAL))
             .unwrap_or(STATS_INTERVAL);
+        if let Some(l) = h3_listener.as_mut() {
+            if let Some(t) = l.endpoint.timeout() {
+                timeout = timeout.min(t);
+            }
+        }
         // EINTR is routine on Android (GC/freezer signals) — retry, not die.
         if let Err(e) = poll.poll(&mut events, Some(timeout)) {
             if e.kind() == std::io::ErrorKind::Interrupted {
@@ -589,6 +832,33 @@ fn run_inner(
         for event in events.iter() {
             let token = event.token();
             if token == WAKER_TOKEN || !event.is_readable() {
+                continue;
+            }
+            // Tokens at or above H3_TOKEN_BASE belong to the local HTTP/3
+            // listener; everything else is the MPQUIC tunnel.
+            if token.0 >= H3_TOKEN_BASE {
+                let Some(l) = h3_listener.as_mut() else {
+                    continue;
+                };
+                loop {
+                    let (len, local, peer) = match l.sock.recv_from(&mut recv_buf, token) {
+                        Ok(v) => v,
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                        Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                        Err(e) => {
+                            error!("h3 socket recv: {e}");
+                            break;
+                        }
+                    };
+                    let pkt_info = PacketInfo {
+                        src: peer,
+                        dst: local,
+                        time: Instant::now(),
+                    };
+                    if let Err(e) = l.endpoint.recv(&mut recv_buf[..len], &pkt_info) {
+                        error!("h3 endpoint recv failed: {e:?}");
+                    }
+                }
                 continue;
             }
             // Drain the socket.
@@ -611,6 +881,9 @@ fn run_inner(
         }
 
         endpoint.on_timeout(Instant::now());
+        if let Some(l) = h3_listener.as_mut() {
+            l.endpoint.on_timeout(Instant::now());
+        }
 
         maybe_emit_send_summary(&mut endpoint, &shared);
 
