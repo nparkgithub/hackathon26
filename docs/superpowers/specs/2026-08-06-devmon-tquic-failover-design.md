@@ -207,16 +207,40 @@ Following the existing pattern in this module — pure, `android.util.Log`-free 
 - **Health cache TTL:** injectable clock; probe once inside the window, re-probe after it
 - **Budget:** a fallback is skipped when the remaining deadline is too small
 
-### On device
+### On device — **run 2026-08-06**
 
-1. DevMon healthy → routes to DevMon, ~24 s round trip (regression against the measured baseline)
-2. DevMon force-stopped → connection refused → fails over, TQUIC answers
-3. DevMon running, PC off Wi-Fi → silent close → fails over
-4. PC drops between health check and request → `503` → fails over
-5. Both backends down → spoken error, glasses return to `READY`, next capture accepted
-6. Slow model → waits it out on DevMon, no failover fires
-7. `answer_provider=DEVMON` → no failover attempted even when unhealthy
-8. Regression: live streaming and image-only capture still work
+Run against the phone's real `CaptureServer` on 8889 using a stand-in for the glasses
+(`fake_glasses.py`, which speaks the `VSCQ` protocol) rather than by driving the P2P pairing flow
+across two devices. Every change in this design is phone-side, so the glasses add nothing to what
+is under test while adding considerable setup fragility.
+
+| # | Scenario | Result |
+|---|---|---|
+| A | DevMon healthy | ✅ `routing to DevMon`, answered in **24.9 s** vs the 24.4 s baseline — no regression. Health probe → routing decision in **3 ms** |
+| B | DevMon force-stopped | ✅ probe refused, `DevMon unhealthy, routing to TQUIC`, whole capture resolved in **0.2 s** — no hang |
+| C | `answer_provider=DEVMON` with DevMon down | ✅ zero router log lines; DevMon's own error surfaced |
+| D | Peer lost between probe and request | ✅ **fired for real, unplanned**: `200 /health` then `503` from `/analyze` then `DevMon failed, retrying on TQUIC` |
+
+Test D is the one worth keeping. It was not staged — DevMon genuinely passed its health check and then rejected the request — and it is exactly the race that justifies handling request failures at all rather than health alone. Had this design been health-only, that capture would simply have failed.
+
+**The installed DevMon does not match the merged source.** Its `/health` returned
+`200 {"status":"ok","peerDiscovered":false,"visionModel":null}` — a response `respondHealth` in
+`32fee7a6` calls "unreachable by construction", since it should close the socket silently with no
+peer. The APK on the phone was last updated 2026-08-06 10:12; the endpoint was committed at 11:39
+and merged at 12:30. **DevMon needs rebuilding and reinstalling from main before the health check
+behaves as this design assumes.**
+
+Until it is, `/health` answers `200` unconditionally, so the health probe never reports unhealthy
+and the `503` retry path is carrying the entire feature on its own. That it works anyway is the
+argument for having built both mechanisms.
+
+### Still unverified
+
+- Slow model → waits it out on DevMon, no failover (needs a genuinely slow model; the rule itself
+  is covered by unit tests on `isDevmonTimeout`)
+- Both backends down → glasses return to `READY` and accept the next capture (needs the real
+  glasses, whose state machine is untouched by this work)
+- Regression: live streaming and image-only capture (untouched paths)
 
 ## Open items
 
