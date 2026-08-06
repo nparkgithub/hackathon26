@@ -1,191 +1,159 @@
-//! The wire protocol for one inbound request body: two length-prefixed
-//! frames back to back, image then text.
+//! The wire protocol for one inbound request body: a JSON document in one
+//! of two shapes, distinguished by which keys are present (content
+//! sniffing, not a separate endpoint or a discriminator field):
 //!
-//! ```text
-//! [1 byte type=0x01][8-byte big-endian length N][N bytes: JPEG image]
-//! [1 byte type=0x02][8-byte big-endian length M][M bytes: UTF-8 text prompt]
-//! ```
+//! - `{"jpeg": "<base64>", "prompt": "<text>"}` -- the server builds the
+//!   OpenAI-shaped chat-completion request itself (`vlm_client::infer`).
+//! - `{"model": ..., "messages": [...]}` -- already OpenAI-shaped; forwarded
+//!   to the VLM backend verbatim, unexamined further (`vlm_client::infer_raw`).
 //!
-//! This is a fixed two-frame protocol, not an extensible one: trailing
-//! bytes after both frames are rejected rather than silently ignored, since
-//! that's much more likely to indicate a client-side bug than a forward-
-//! compatible extension nobody asked for.
+//! A body matching neither shape is rejected (`FrameError::UnrecognizedShape`)
+//! rather than guessed at.
 
 use crate::error::FrameError;
+use base64::Engine;
 
-pub const FRAME_TYPE_IMAGE: u8 = 0x01;
-pub const FRAME_TYPE_TEXT: u8 = 0x02;
-
-const HEADER_LEN: usize = 9; // 1 type byte + 8-byte big-endian length
-
-struct Cursor<'a> {
-    body: &'a [u8],
-    pos: usize,
+#[derive(Debug)]
+pub enum ParsedRequest {
+    Simple { jpeg: Vec<u8>, prompt: String },
+    OpenAiPassthrough(serde_json::Value),
 }
 
-impl<'a> Cursor<'a> {
-    fn remaining(&self) -> usize {
-        self.body.len() - self.pos
-    }
+/// Parses a full request body. Pure and synchronous -- called once per
+/// request, on the reactor thread, only after the whole body has been
+/// buffered (see `reactor/conn_state.rs`).
+///
+/// Deliberately not a `#[serde(untagged)]` enum: that would make any valid
+/// JSON object silently match a catch-all `Value` variant, losing the
+/// explicit "neither shape recognized -> 400" rejection below.
+pub fn read_request(body: &[u8]) -> Result<ParsedRequest, FrameError> {
+    let value: serde_json::Value = serde_json::from_slice(body)?;
+    let obj = value.as_object().ok_or(FrameError::UnrecognizedShape)?;
 
-    /// Reads one frame's header + payload, validating `expected` type and
-    /// bounds-checking the claimed length against the remaining bytes
-    /// *before* slicing -- a truncated or lying length fails fast here
-    /// rather than attempting an out-of-bounds slice or an unbounded
-    /// allocation.
-    fn read_frame(&mut self, expected: u8, max_frame_bytes: usize) -> Result<&'a [u8], FrameError> {
-        if self.remaining() < HEADER_LEN {
-            return Err(FrameError::Truncated { need: HEADER_LEN - self.remaining(), have: self.remaining() });
-        }
-        let got = self.body[self.pos];
-        if got != expected {
-            return Err(FrameError::WrongType { expected, got });
-        }
-        let len_bytes: [u8; 8] = self.body[self.pos + 1..self.pos + HEADER_LEN].try_into().unwrap();
-        let len = u64::from_be_bytes(len_bytes);
-        self.pos += HEADER_LEN;
-
-        if len > max_frame_bytes as u64 {
-            return Err(FrameError::TooLarge { len, max: max_frame_bytes });
-        }
-        if len > self.remaining() as u64 {
-            return Err(FrameError::LengthOverflow { len, remaining: self.remaining() });
-        }
-        let len = len as usize;
-        let payload = &self.body[self.pos..self.pos + len];
-        self.pos += len;
-        Ok(payload)
+    if obj.contains_key("jpeg") && obj.contains_key("prompt") {
+        let jpeg_b64 = obj["jpeg"].as_str().ok_or(FrameError::UnrecognizedShape)?;
+        let jpeg = base64::engine::general_purpose::STANDARD.decode(jpeg_b64)?;
+        let prompt = obj["prompt"].as_str().ok_or(FrameError::UnrecognizedShape)?.to_string();
+        return Ok(ParsedRequest::Simple { jpeg, prompt });
     }
+    if obj.contains_key("model") && obj.contains_key("messages") {
+        return Ok(ParsedRequest::OpenAiPassthrough(value));
+    }
+    Err(FrameError::UnrecognizedShape)
 }
 
-/// Parses a full request body into (jpeg bytes, prompt text). Pure and
-/// synchronous -- called once per request, on the reactor thread, only
-/// after the whole body has been buffered (see `reactor/conn_state.rs`).
-pub fn read_frames(body: &[u8], max_frame_bytes: usize) -> Result<(Vec<u8>, String), FrameError> {
-    let mut cur = Cursor { body, pos: 0 };
-    let image = cur.read_frame(FRAME_TYPE_IMAGE, max_frame_bytes)?.to_vec();
-    let text = cur.read_frame(FRAME_TYPE_TEXT, max_frame_bytes)?;
-    let prompt = std::str::from_utf8(text)?.to_string();
-
-    if cur.remaining() > 0 {
-        return Err(FrameError::TrailingBytes(cur.remaining()));
-    }
-    Ok((image, prompt))
+/// Inverse of the `Simple` half of `read_request` -- used by the test
+/// client and by these unit tests for a round trip. Not used by the
+/// server itself.
+pub fn write_request_simple(jpeg: &[u8], prompt: &str) -> Vec<u8> {
+    let b64 = base64::engine::general_purpose::STANDARD.encode(jpeg);
+    serde_json::to_vec(&serde_json::json!({ "jpeg": b64, "prompt": prompt }))
+        .expect("simple request always serializes")
 }
 
-/// Inverse of `read_frames` -- used by the test client and by these unit
-/// tests for a round trip. Not used by the server itself.
-pub fn write_frames(jpeg: &[u8], prompt: &str) -> Vec<u8> {
-    let text = prompt.as_bytes();
-    let mut out = Vec::with_capacity(HEADER_LEN * 2 + jpeg.len() + text.len());
-    out.push(FRAME_TYPE_IMAGE);
-    out.extend_from_slice(&(jpeg.len() as u64).to_be_bytes());
-    out.extend_from_slice(jpeg);
-    out.push(FRAME_TYPE_TEXT);
-    out.extend_from_slice(&(text.len() as u64).to_be_bytes());
-    out.extend_from_slice(text);
-    out
+/// Inverse of the `OpenAiPassthrough` half of `read_request` -- used by the
+/// test client and by these unit tests for a round trip. Not used by the
+/// server itself.
+pub fn write_request_raw(value: &serde_json::Value) -> Vec<u8> {
+    serde_json::to_vec(value).expect("a serde_json::Value always serializes")
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const MAX: usize = 32 * 1024 * 1024;
-
     #[test]
-    fn round_trip() {
+    fn round_trip_simple() {
         let jpeg = vec![0xFFu8, 0xD8, 0xFF, 0xD9]; // minimal JPEG SOI/EOI marker bytes
         let prompt = "what is this?";
-        let body = write_frames(&jpeg, prompt);
-        let (got_jpeg, got_prompt) = read_frames(&body, MAX).unwrap();
-        assert_eq!(got_jpeg, jpeg);
-        assert_eq!(got_prompt, prompt);
+        let body = write_request_simple(&jpeg, prompt);
+        match read_request(&body).unwrap() {
+            ParsedRequest::Simple { jpeg: got_jpeg, prompt: got_prompt } => {
+                assert_eq!(got_jpeg, jpeg);
+                assert_eq!(got_prompt, prompt);
+            }
+            ParsedRequest::OpenAiPassthrough(_) => panic!("expected Simple"),
+        }
     }
 
     #[test]
-    fn round_trip_empty_frames() {
-        // Framing only validates structure, not JPEG well-formedness or
+    fn round_trip_simple_empty_fields() {
+        // Parsing only validates structure, not JPEG well-formedness or
         // prompt non-emptiness -- those are the VLM backend's concern.
-        let body = write_frames(&[], "");
-        let (jpeg, prompt) = read_frames(&body, MAX).unwrap();
-        assert!(jpeg.is_empty());
-        assert!(prompt.is_empty());
-    }
-
-    #[test]
-    fn truncated_header() {
-        let body = vec![FRAME_TYPE_IMAGE, 0, 0, 0]; // shorter than a 9-byte header
-        match read_frames(&body, MAX) {
-            Err(FrameError::Truncated { .. }) => {}
-            other => panic!("expected Truncated, got {other:?}"),
+        let body = write_request_simple(&[], "");
+        match read_request(&body).unwrap() {
+            ParsedRequest::Simple { jpeg, prompt } => {
+                assert!(jpeg.is_empty());
+                assert!(prompt.is_empty());
+            }
+            ParsedRequest::OpenAiPassthrough(_) => panic!("expected Simple"),
         }
     }
 
     #[test]
-    fn truncated_payload() {
-        let mut body = vec![FRAME_TYPE_IMAGE];
-        body.extend_from_slice(&100u64.to_be_bytes()); // claims 100 bytes
-        body.extend_from_slice(&[1, 2, 3]); // only 3 present
-        match read_frames(&body, MAX) {
-            Err(FrameError::LengthOverflow { len: 100, remaining: 3 }) => {}
-            other => panic!("expected LengthOverflow, got {other:?}"),
+    fn round_trip_openai_passthrough() {
+        let value = serde_json::json!({
+            "model": "qwen3-vl:8b",
+            "messages": [{"role": "user", "content": [{"type": "text", "text": "hi"}]}],
+        });
+        let body = write_request_raw(&value);
+        match read_request(&body).unwrap() {
+            ParsedRequest::OpenAiPassthrough(got) => assert_eq!(got, value),
+            ParsedRequest::Simple { .. } => panic!("expected OpenAiPassthrough"),
         }
     }
 
     #[test]
-    fn wrong_type_first_frame() {
-        let mut body = vec![FRAME_TYPE_TEXT]; // should be FRAME_TYPE_IMAGE
-        body.extend_from_slice(&0u64.to_be_bytes());
-        match read_frames(&body, MAX) {
-            Err(FrameError::WrongType { expected: FRAME_TYPE_IMAGE, got: FRAME_TYPE_TEXT }) => {}
-            other => panic!("expected WrongType, got {other:?}"),
+    fn simple_shape_checked_before_passthrough() {
+        // A body with all four keys present matches Simple, since that
+        // check runs first -- documents the precedence, not just asserts it.
+        let body = br#"{"jpeg":"aGk=","prompt":"hi","model":"m","messages":[]}"#;
+        match read_request(body).unwrap() {
+            ParsedRequest::Simple { .. } => {}
+            ParsedRequest::OpenAiPassthrough(_) => panic!("expected Simple to take precedence"),
         }
     }
 
     #[test]
-    fn wrong_type_second_frame() {
-        let mut body = vec![FRAME_TYPE_IMAGE];
-        body.extend_from_slice(&0u64.to_be_bytes());
-        body.push(FRAME_TYPE_IMAGE); // should be FRAME_TYPE_TEXT
-        body.extend_from_slice(&0u64.to_be_bytes());
-        match read_frames(&body, MAX) {
-            Err(FrameError::WrongType { expected: FRAME_TYPE_TEXT, got: FRAME_TYPE_IMAGE }) => {}
-            other => panic!("expected WrongType, got {other:?}"),
+    fn malformed_json() {
+        match read_request(b"not json") {
+            Err(FrameError::InvalidJson(_)) => {}
+            other => panic!("expected InvalidJson, got {other:?}"),
         }
     }
 
     #[test]
-    fn length_exceeds_max_frame_bytes() {
-        let mut body = vec![FRAME_TYPE_IMAGE];
-        body.extend_from_slice(&1000u64.to_be_bytes());
-        body.extend_from_slice(&vec![0u8; 1000]);
-        match read_frames(&body, 100) {
-            Err(FrameError::TooLarge { len: 1000, max: 100 }) => {}
-            other => panic!("expected TooLarge, got {other:?}"),
+    fn invalid_base64_jpeg() {
+        let body = br#"{"jpeg":"not valid base64!!","prompt":"hi"}"#;
+        match read_request(body) {
+            Err(FrameError::InvalidBase64(_)) => {}
+            other => panic!("expected InvalidBase64, got {other:?}"),
         }
     }
 
     #[test]
-    fn trailing_bytes_rejected() {
-        let mut body = write_frames(b"jpg", "hi");
-        body.extend_from_slice(&[0xAA, 0xBB]);
-        match read_frames(&body, MAX) {
-            Err(FrameError::TrailingBytes(2)) => {}
-            other => panic!("expected TrailingBytes(2), got {other:?}"),
+    fn unrecognized_shape() {
+        let body = br#"{"foo":"bar"}"#;
+        match read_request(body) {
+            Err(FrameError::UnrecognizedShape) => {}
+            other => panic!("expected UnrecognizedShape, got {other:?}"),
         }
     }
 
     #[test]
-    fn invalid_utf8_prompt() {
-        let mut body = vec![FRAME_TYPE_IMAGE];
-        body.extend_from_slice(&0u64.to_be_bytes());
-        body.push(FRAME_TYPE_TEXT);
-        body.extend_from_slice(&2u64.to_be_bytes());
-        body.extend_from_slice(&[0xFF, 0xFE]); // not valid UTF-8
-        match read_frames(&body, MAX) {
-            Err(FrameError::InvalidUtf8(_)) => {}
-            other => panic!("expected InvalidUtf8, got {other:?}"),
+    fn non_object_json_is_unrecognized_shape() {
+        match read_request(b"[1,2,3]") {
+            Err(FrameError::UnrecognizedShape) => {}
+            other => panic!("expected UnrecognizedShape, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn non_string_prompt_is_unrecognized_shape() {
+        let body = br#"{"jpeg":"aGk=","prompt":42}"#;
+        match read_request(body) {
+            Err(FrameError::UnrecognizedShape) => {}
+            other => panic!("expected UnrecognizedShape, got {other:?}"),
         }
     }
 }

@@ -49,7 +49,6 @@ pub struct Reactor {
 
     infer_path: String,
     max_body_bytes: usize,
-    max_frame_bytes: usize,
     max_inflight_vlm: usize,
     inflight_vlm: usize,
     vlm_cfg: VlmConfig,
@@ -82,7 +81,6 @@ impl Reactor {
             scratch: vec![0u8; 65536],
             infer_path: v.args.infer_path.clone(),
             max_body_bytes: v.args.max_body_bytes,
-            max_frame_bytes: v.args.max_frame_bytes,
             max_inflight_vlm: v.args.max_inflight_vlm,
             inflight_vlm: 0,
             vlm_cfg: VlmConfig {
@@ -178,10 +176,19 @@ impl Reactor {
                 None => continue,
             };
             match result.outcome {
-                Ok(text) => queue_response(state, conn, result.stream_id, 200, text.into_bytes()),
+                Ok((text, content_type)) => {
+                    queue_response(state, conn, result.stream_id, 200, content_type.as_bytes(), text.into_bytes())
+                }
                 Err(e) => {
                     let req_err = RequestError::from(e);
-                    queue_response(state, conn, result.stream_id, req_err.status(), req_err.to_string().into_bytes());
+                    queue_response(
+                        state,
+                        conn,
+                        result.stream_id,
+                        req_err.status(),
+                        b"text/plain",
+                        req_err.to_string().into_bytes(),
+                    );
                 }
             }
         }
@@ -212,10 +219,10 @@ impl Reactor {
                         let (method, path) = split_pseudo(&headers);
                         state.streams.entry(stream_id).or_default();
                         if method != "POST" {
-                            queue_response(state, conn, stream_id, 405, b"method not allowed".to_vec());
+                            queue_response(state, conn, stream_id, 405, b"text/plain", b"method not allowed".to_vec());
                             mark_dispatched(state, stream_id);
                         } else if path != self.infer_path {
-                            queue_response(state, conn, stream_id, 404, b"not found".to_vec());
+                            queue_response(state, conn, stream_id, 404, b"text/plain", b"not found".to_vec());
                             mark_dispatched(state, stream_id);
                         } else if fin {
                             if let Some(s) = state.streams.get_mut(&stream_id) {
@@ -276,11 +283,11 @@ impl Reactor {
                 s.dispatched = true;
                 std::mem::take(&mut s.body)
             };
-            match frames::read_frames(&body, self.max_frame_bytes) {
-                Ok((jpeg, prompt)) => {
+            match frames::read_request(&body) {
+                Ok(request) => {
                     if self.inflight_vlm >= self.max_inflight_vlm {
                         if let Some(conn) = self.endpoint.conn_get_mut(idx) {
-                            queue_response(state, conn, stream_id, 503, b"server busy, try again".to_vec());
+                            queue_response(state, conn, stream_id, 503, b"text/plain", b"server busy, try again".to_vec());
                         }
                         continue;
                     }
@@ -288,8 +295,7 @@ impl Reactor {
                     vlm_bridge::spawn(
                         idx,
                         stream_id,
-                        jpeg,
-                        prompt,
+                        request,
                         self.vlm_cfg.clone(),
                         self.vlm_tx.clone(),
                         self.waker.clone(),
@@ -298,7 +304,14 @@ impl Reactor {
                 Err(e) => {
                     if let Some(conn) = self.endpoint.conn_get_mut(idx) {
                         let req_err = RequestError::from(e);
-                        queue_response(state, conn, stream_id, req_err.status(), req_err.to_string().into_bytes());
+                        queue_response(
+                            state,
+                            conn,
+                            stream_id,
+                            req_err.status(),
+                            b"text/plain",
+                            req_err.to_string().into_bytes(),
+                        );
                     }
                 }
             }
@@ -378,7 +391,7 @@ fn pump_body(state: &mut ServerConnState, conn: &mut Connection, stream_id: u64,
                         s.body.clear();
                         s.dispatched = true;
                     }
-                    queue_response(state, conn, stream_id, 413, b"payload too large".to_vec());
+                    queue_response(state, conn, stream_id, 413, b"text/plain", b"payload too large".to_vec());
                     return;
                 }
                 if let Some(s) = state.streams.get_mut(&stream_id) {
@@ -400,14 +413,24 @@ fn pump_body(state: &mut ServerConnState, conn: &mut Connection, stream_id: u64,
     }
 }
 
-/// Sends response headers (status 200/4xx/5xx + `content-type: text/plain`)
-/// once, queues the body, and makes a first flush attempt.
-fn queue_response(state: &mut ServerConnState, conn: &mut Connection, stream_id: u64, status: u16, body: Vec<u8>) {
+/// Sends response headers (status 200/4xx/5xx + `content-type`) once, queues
+/// the body, and makes a first flush attempt. `content_type` varies for a
+/// 200: `text/plain` for the `Simple`-request extracted-answer path,
+/// `application/json` for the `OpenAiPassthrough` relayed-verbatim path
+/// (see `vlm_bridge::VlmJobResult`) -- every non-200 path keeps `text/plain`.
+fn queue_response(
+    state: &mut ServerConnState,
+    conn: &mut Connection,
+    stream_id: u64,
+    status: u16,
+    content_type: &[u8],
+    body: Vec<u8>,
+) {
     let h3 = match state.h3.as_mut() {
         Some(h) => h,
         None => return,
     };
-    let headers = [Header::new(b":status", status.to_string().as_bytes()), Header::new(b"content-type", b"text/plain")];
+    let headers = [Header::new(b":status", status.to_string().as_bytes()), Header::new(b"content-type", content_type)];
     if let Err(e) = h3.send_headers(conn, stream_id, &headers, false) {
         log::debug!("tquic-vlm-server-interface: send_headers failed for stream {stream_id}: {e}");
         state.streams.remove(&stream_id);

@@ -1,8 +1,10 @@
 //! Standalone H3 test client for smoke-testing `tquic-vlm-server-interface` without a
-//! phone. Opens one client-role `tquic::Endpoint`, connects, sends
-//! `frames::write_frames(image, prompt)` as a single POST body, waits for
-//! the response, prints status + body, and exits non-zero on anything but
-//! 200.
+//! phone. Opens one client-role `tquic::Endpoint`, connects, sends either
+//! shape of request body the server accepts -- `--image`/`--prompt` for the
+//! simple `{"jpeg","prompt"}` JSON (`frames::write_request_simple`), or
+//! `--raw-body <path>` to send a pre-built OpenAI-shaped JSON file verbatim,
+//! exercising the passthrough path -- waits for the response, prints
+//! status + body, and exits non-zero on anything but 200.
 //!
 //! `verify_peer=false`, matching the server's self-signed demo cert and the
 //! existing Android demo's own "quick and insecure" TLS posture -- this is
@@ -38,10 +40,18 @@ struct Args {
     /// certificate SAN.
     #[arg(long, default_value = "tquic-vlm-server-interface")]
     server_name: String,
+    /// Simple-shape mode: JPEG file to send as {"jpeg": "<base64>", ...}.
+    /// Mutually exclusive with --raw-body; requires --prompt too.
     #[arg(long)]
-    image: std::path::PathBuf,
+    image: Option<std::path::PathBuf>,
+    /// Simple-shape mode: prompt text. Requires --image too.
     #[arg(long)]
-    prompt: String,
+    prompt: Option<String>,
+    /// Passthrough-shape mode: a file containing a pre-built OpenAI-shaped
+    /// JSON request ({"model", "messages", ...}), sent verbatim as the
+    /// request body. Mutually exclusive with --image/--prompt.
+    #[arg(long)]
+    raw_body: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = 30_000)]
     idle_timeout_ms: u64,
     #[arg(long, default_value_t = 10_000)]
@@ -141,8 +151,16 @@ fn fail(msg: impl std::fmt::Display) -> ! {
 
 fn main() {
     let args = Args::parse();
-    let jpeg = std::fs::read(&args.image).unwrap_or_else(|e| fail(format!("failed to read --image {}: {e}", args.image.display())));
-    let body = frames::write_frames(&jpeg, &args.prompt);
+    let body = match (&args.raw_body, &args.image, &args.prompt) {
+        (Some(path), None, None) => std::fs::read(path)
+            .unwrap_or_else(|e| fail(format!("failed to read --raw-body {}: {e}", path.display()))),
+        (None, Some(image), Some(prompt)) => {
+            let jpeg =
+                std::fs::read(image).unwrap_or_else(|e| fail(format!("failed to read --image {}: {e}", image.display())));
+            frames::write_request_simple(&jpeg, prompt)
+        }
+        _ => fail("pass either --raw-body <path>, or both --image <path> and --prompt <text> (not a mix, not neither)"),
+    };
 
     let remote: SocketAddr = format!("{}:{}", args.host, args.port).parse().unwrap_or_else(|e| fail(format!("invalid --host/--port: {e}")));
 
