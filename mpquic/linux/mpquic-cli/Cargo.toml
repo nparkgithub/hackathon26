@@ -1,0 +1,28 @@
+[package]
+name = "mpquic-cli"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Reuses the exact engine that powers the Android apps — mpquic-jni's
+# config/engine/output modules are platform-independent Rust; only its
+# Java_* exports are Android-specific.
+[dependencies]
+mpquic-jni = { path = "../../mpquic-jni" }
+mio = { version = "0.8", features = ["net", "os-poll"] }
+serde_json = "1"
+ctrlc = "3"
+
+[[bin]]
+name = "mpquic-client"
+path = "src/bin/mpquic_client.rs"
+
+[[bin]]
+name = "mpquic-server"
+path = "src/bin/mpquic_server.rs"
+
+[profile.release]
+opt-level = 2
+strip = true
+
+[workspace]

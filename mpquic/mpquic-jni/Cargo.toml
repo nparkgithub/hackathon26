@@ -6,7 +6,9 @@ publish = false
 
 [lib]
 name = "mpquic_jni"
-crate-type = ["cdylib"]
+# cdylib for the Android JNI .so; rlib so other frontends (the Linux CLI in
+# ../linux) can reuse the engine as a plain Rust library.
+crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 tquic = { path = "../tquic" }
