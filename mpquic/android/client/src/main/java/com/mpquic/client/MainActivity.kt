@@ -1,6 +1,7 @@
 package com.mpquic.client
 
 import android.os.Bundle
+import android.os.ParcelFileDescriptor
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
@@ -18,6 +19,8 @@ import com.mpquic.core.PathGraphView
 import com.mpquic.core.UdpIngest
 import org.json.JSONArray
 import org.json.JSONObject
+import java.net.DatagramSocket
+import java.net.InetSocketAddress
 
 class MainActivity : AppCompatActivity() {
     private lateinit var engine: EngineController
@@ -125,8 +128,18 @@ class MainActivity : AppCompatActivity() {
                 put("congestion_control", ccAlgo.selectedItem.toString())
                 put("log_level", logLevel.selectedItem.toString())
             }
+            // rmnet stays reachable enough to bind() to (NetworkMonitor's
+            // requestNetwork keeps its addresses alive) but Android still
+            // blocks a plain socket from *sending* over it while Wi-Fi is
+            // the default route -- ENETUNREACH at send time. bindCellularFd()
+            // runs the local cellular address through Network.bindSocket()
+            // before the engine ever touches it, so the fd it hands to Rust
+            // is already authorized for that route. No-op (-1) unless
+            // connect_to_alt is filled in and a cellular local address is
+            // actually present.
+            val cellularFd = bindCellularFd(cfg)
             appendLog("I: starting client: $cfg")
-            if (engine.start(cfg.toString())) {
+            if (engine.start(cfg.toString(), cellularFd)) {
                 connectBtn.isEnabled = false
                 disconnectBtn.isEnabled = true
                 sendBtn.isEnabled = true
@@ -234,6 +247,57 @@ class MainActivity : AppCompatActivity() {
             }
             engine.send(payload)
             appendLog("I: sent $sizeMb MB test payload")
+        }
+    }
+
+    /**
+     * If [cfg] has `connect_to_alt` and one of its `local_addresses` is owned
+     * by an rmnet_data* interface, create a UDP socket, bind it to that
+     * address, and run it through `Network.bindSocket()` on the currently
+     * live cellular network -- authorizing it to actually send over cellular
+     * while Wi-Fi remains Android's default route (see comment at the call
+     * site). Returns the resulting fd, or -1 if not applicable or it fails
+     * for any reason (falls back to the engine binding its own socket, same
+     * as before this existed).
+     */
+    private fun bindCellularFd(cfg: JSONObject): Int {
+        if (!cfg.has("connect_to_alt")) return -1
+        val network = monitor.cellularNetwork
+        if (network == null) {
+            appendLog("W: connect_to_alt set but no live cellular network to bind to yet")
+            return -1
+        }
+        val locals = cfg.optJSONArray("local_addresses") ?: JSONArray()
+        var cellularIp: String? = null
+        for (i in 0 until locals.length()) {
+            val ip = locals.getString(i)
+            if (NetUtils.ifaceNameForIp(ip)?.startsWith("rmnet") == true) {
+                cellularIp = ip
+                break
+            }
+        }
+        if (cellularIp == null) {
+            appendLog("W: connect_to_alt set but no rmnet-owned local address found")
+            return -1
+        }
+        var socket: DatagramSocket? = null
+        return try {
+            socket = DatagramSocket(null).apply {
+                reuseAddress = true
+                bind(InetSocketAddress(cellularIp, 0))
+            }
+            network.bindSocket(socket)
+            val fd = ParcelFileDescriptor.fromDatagramSocket(socket).detachFd()
+            appendLog("I: bound cellular socket $cellularIp via Network.bindSocket() (fd=$fd)")
+            fd
+        } catch (e: Exception) {
+            appendLog("W: Network.bindSocket() for $cellularIp failed: ${e.javaClass.simpleName}: ${e.message}")
+            -1
+        } finally {
+            // detachFd() (on success) dup()'d the fd Rust now owns, so
+            // closing the original java-side socket here doesn't affect it --
+            // it just releases the descriptor this process no longer needs.
+            socket?.close()
         }
     }
 

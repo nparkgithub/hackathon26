@@ -58,6 +58,34 @@ impl QuicSocket {
     /// Bind an additional local address (an extra multipath path).
     pub fn add(&mut self, local: &SocketAddr, registry: &Registry) -> std::io::Result<SocketAddr> {
         let socket = UdpSocket::bind(*local)?;
+        self.insert(socket, registry)
+    }
+
+    /// Add an additional path from an already-created, already-bound fd
+    /// (e.g. an Android `DatagramSocket` that's been through
+    /// `Network.bindSocket()`) instead of binding a fresh one ourselves.
+    /// Needed because a socket this process creates and binds itself has no
+    /// route authorization for a non-default Android network (cellular
+    /// while Wi-Fi is default) -- see `engine.rs`'s `cellular_fd` handling.
+    ///
+    /// Takes ownership of `fd`: on success it's owned by the returned
+    /// socket (closed on drop like any other); on error the fd is still
+    /// consumed (closed), matching `UdpSocket::from_raw_fd`'s contract that
+    /// the caller hands off ownership unconditionally.
+    #[cfg(unix)]
+    pub fn add_from_fd(
+        &mut self,
+        fd: std::os::unix::io::RawFd,
+        registry: &Registry,
+    ) -> std::io::Result<SocketAddr> {
+        use std::os::unix::io::FromRawFd;
+        let std_socket = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
+        std_socket.set_nonblocking(true)?;
+        let socket = UdpSocket::from_std(std_socket);
+        self.insert(socket, registry)
+    }
+
+    fn insert(&mut self, socket: UdpSocket, registry: &Registry) -> std::io::Result<SocketAddr> {
         let local_addr = socket.local_addr()?;
         let sid = self.socks.insert(socket);
         self.addrs.insert(local_addr, sid);

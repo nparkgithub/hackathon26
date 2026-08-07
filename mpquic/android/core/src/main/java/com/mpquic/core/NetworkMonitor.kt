@@ -30,6 +30,18 @@ class NetworkMonitor(
     private val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
     private var started = false
 
+    /**
+     * The live cellular [Network] handle, if the held cellular request
+     * currently has one. `requestNetwork()` keeps rmnet's addresses alive so
+     * they show up in [onChange], but a plain socket still won't route over
+     * it while Wi-Fi is default -- callers that need to actually send on this
+     * network must call `network.bindSocket(...)` on this object themselves
+     * (see `MainActivity`'s cellular-path handling).
+     */
+    @Volatile
+    var cellularNetwork: Network? = null
+        private set
+
     private val rescan = Runnable { onChange(NetUtils.interfaceAddresses()) }
 
     fun start() {
@@ -43,14 +55,30 @@ class NetworkMonitor(
         )) {
             register(NetworkRequest.Builder().addTransportType(transport).build(), request = false)
         }
-        // Hold cellular up alongside Wi-Fi.
-        register(
-            NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build(),
-            request = true,
-        )
+        // Hold cellular up alongside Wi-Fi, and track its Network handle so
+        // callers can bindSocket() onto it.
+        val cellularCb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                cellularNetwork = network
+                refresh()
+            }
+            override fun onLost(network: Network) {
+                if (cellularNetwork == network) cellularNetwork = null
+                refresh()
+            }
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) = refresh()
+        }
+        try {
+            cm.requestNetwork(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build(),
+                cellularCb,
+            )
+            callbacks.add(cellularCb)
+        } catch (_: Exception) {
+        }
         refresh()
     }
 
@@ -65,6 +93,7 @@ class NetworkMonitor(
             }
         }
         callbacks.clear()
+        cellularNetwork = null
     }
 
     /** Re-enumerate now (debounced, on the main thread). */

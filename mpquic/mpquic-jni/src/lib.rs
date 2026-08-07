@@ -26,7 +26,7 @@ use mio::{Poll, Waker};
 use config::BridgeConfig;
 use engine::{Cmd, EngineHandle, ENGINE};
 
-fn start_engine(config_json: &str) -> Result<(), String> {
+fn start_engine(config_json: &str, cellular_fd: Option<i32>) -> Result<(), String> {
     let cfg: BridgeConfig =
         serde_json::from_str(config_json).map_err(|e| format!("bad config JSON: {e}"))?;
 
@@ -53,7 +53,7 @@ fn start_engine(config_json: &str) -> Result<(), String> {
     let running2 = running.clone();
     let join = std::thread::Builder::new()
         .name("mpquic-engine".into())
-        .spawn(move || engine::run(cfg, poll, cmd_rx, running2))
+        .spawn(move || engine::run(cfg, poll, cmd_rx, running2, cellular_fd))
         .map_err(|e| e.to_string())?;
 
     *guard = Some(EngineHandle {
@@ -103,7 +103,39 @@ pub extern "system" fn Java_com_mpquic_core_TquicBridge_nativeStart(
             Ok(s) => s.into(),
             Err(_) => return -1,
         };
-        match start_engine(&cfg) {
+        match start_engine(&cfg, None) {
+            Ok(()) => 0,
+            Err(e) => {
+                output::push(format!("L|E|start failed: {e}"));
+                -2
+            }
+        }
+    }));
+    result.unwrap_or(-3)
+}
+
+/// Same as [Java_com_mpquic_core_TquicBridge_nativeStart], but accepts an
+/// already-created, already-`Network.bindSocket()`-bound UDP socket fd for
+/// the local address that needs to route over a specific (non-default)
+/// Android network -- e.g. cellular while Wi-Fi is the default route. The
+/// engine reconstructs a `mio` socket from this fd instead of calling
+/// `UdpSocket::bind()` itself, since a freshly-bound socket created in Rust
+/// has no such route authorization. Pass `cellularFd < 0` for "none";
+/// behaves identically to `nativeStart` in that case.
+#[no_mangle]
+pub extern "system" fn Java_com_mpquic_core_TquicBridge_nativeStartWithCellularFd(
+    mut env: JNIEnv,
+    _cls: JClass,
+    config: JString,
+    cellular_fd: jint,
+) -> jint {
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        let cfg: String = match env.get_string(&config) {
+            Ok(s) => s.into(),
+            Err(_) => return -1,
+        };
+        let fd = if cellular_fd >= 0 { Some(cellular_fd) } else { None };
+        match start_engine(&cfg, fd) {
             Ok(()) => 0,
             Err(e) => {
                 output::push(format!("L|E|start failed: {e}"));

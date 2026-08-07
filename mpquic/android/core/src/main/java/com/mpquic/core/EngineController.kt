@@ -28,8 +28,18 @@ class EngineController(
         }
     }
 
-    fun start(configJson: String): Boolean {
-        val rc = TquicBridge.nativeStart(configJson)
+    /**
+     * [cellularFd], when >= 0, is an already-bound, already-
+     * `Network.bindSocket()`-authorized UDP socket fd for the cellular local
+     * address; the engine reuses it instead of binding its own socket for
+     * that path. Omit (or pass -1) for the normal single-network path.
+     */
+    fun start(configJson: String, cellularFd: Int = -1): Boolean {
+        val rc = if (cellularFd >= 0) {
+            TquicBridge.nativeStartWithCellularFd(configJson, cellularFd)
+        } else {
+            TquicBridge.nativeStart(configJson)
+        }
         if (rc != 0) {
             drain()
             onLog("E: engine failed to start (rc=$rc)")
