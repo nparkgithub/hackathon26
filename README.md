@@ -1,12 +1,23 @@
 # AllergenAR — AI-Powered Allergen Detection with AR Glasses, Edge AI, and Multipath QUIC
 
+<table>
+<tr>
+<td width="65%" valign="top">
+
 > **"Local When Possible. Cloud When Needed. Safety Always."**
 
 AllergenAR lets a person wearing RayNeo AR glasses look at any food, ask a spoken question ("Are there allergens in this?"), and receive an answer overlaid on their lens in seconds — without touching a phone.
 
 A Samsung Galaxy S25 Ultra acts as the orchestration brain. It tries a nearby Snapdragon X Elite PC first (Qwen3-VL 4B, running locally via LM Studio, zero cloud cost, offline-capable). If no local host is found, it falls back transparently to an AWS EC2 server running Qwen3-VL 8B over a Multipath QUIC connection that rides Wi-Fi and 5G simultaneously, surviving a dropped network without dropping the request.
 
+</td>
+<td width="35%" valign="top">
+
 ![AllergenAR glasses detecting food](docs/visuals/hero_ar_glasses_food.png)
+
+</td>
+</tr>
+</table>
 
 ![AllergenAR collaborative devices](docs/visuals/collaborative_devices.png)
 
