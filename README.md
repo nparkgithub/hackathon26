@@ -19,6 +19,21 @@ A Samsung Galaxy S25 Ultra acts as the orchestration brain. It tries a nearby Sn
 | Eunice Koh | eunicek@qti.qualcomm.com |
 
 ---
+## Project Overview
+AR Food Safety Companion: Distributed Edge-to-Cloud Vision AI with Adaptive Connectivity
+
+Project Description
+AR Food Safety Companion is a distributed AI-powered application that enables users to make informed food safety decisions using augmented reality glasses and multimodal vision-language models operating across local and cloud environments.
+
+The solution leverages a heterogeneous device ecosystem consisting of AR glasses, Android smartphones, and Snapdragon X Elite PCs that collaborate as a local compute cluster. When a user captures an image of a food item and submits a query, the system dynamically determines whether the request should be processed locally or offloaded to a more powerful remote AI server hosting larger vision-language models.
+
+To maximize performance and resiliency, devices automatically discover available local AI resources through mDNS-based service discovery. If suitable local compute resources are detected, queries are processed within the local network to minimize latency and reduce cloud dependency. When local resources are unavailable or insufficient, requests are seamlessly routed to remote AI services equipped with larger vision-language models and higher compute capacity.
+
+The platform further enhances connectivity by intelligently utilizing both Wi-Fi and cellular networks. Depending on network conditions, traffic can be routed through the optimal path or transmitted concurrently across multiple paths. Multi-path transport enables throughput aggregation and improved responsiveness, delivering a seamless user experience even under varying network conditions.
+
+The project demonstrates how distributed AI inference, adaptive networking, and edge computing can be combined to create practical real-world applications. In the AR Food Safety Companion use case, users receive real-time food safety insights while benefiting from the scalability of cloud AI and the responsiveness of local edge intelligence.
+
+
 
 ## End-to-End Architecture
 
