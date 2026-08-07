@@ -1,5 +1,0 @@
-Manifest-Version: 1.0
-Implementation-Title: prompt-executor-mistralai-client
-Implementation-Version: 1.1.1-beta-SNAPSHOT
-Automatic-Module-Name: prompt.executor.mistralai.client.jvm
-

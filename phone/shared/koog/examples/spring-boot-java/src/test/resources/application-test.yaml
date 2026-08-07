@@ -1,4 +1,0 @@
-logging:
-  level:
-    ai.koog: DEBUG
-    com.example: DEBUG

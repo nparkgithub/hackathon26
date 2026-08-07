@@ -1,4 +1,0 @@
-report.file=/local/mnt/workspace/eunicek/polaris/build/multiverse/koog/multiverse/master-agent/build/kover/bin-reports/jvmTest.ic
-exclude=android.*
-exclude=com.android.*
-exclude=jdk.internal.*

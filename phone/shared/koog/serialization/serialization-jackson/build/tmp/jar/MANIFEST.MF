@@ -1,5 +1,0 @@
-Manifest-Version: 1.0
-Implementation-Title: serialization-jackson
-Implementation-Version: 1.1.1-SNAPSHOT
-Automatic-Module-Name: serialization.jackson.jvm
-
