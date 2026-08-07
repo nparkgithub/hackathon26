@@ -65,7 +65,6 @@ Supporting component — **devmon** (`local_llm/mdns/`): the Snapdragon X Elite 
 | `mpquic/` | Multipath QUIC Android apps (client + server) + Linux CLI + Rust JNI bridge to Tencent `tquic` |
 | `tquic-vlm-server-interface/` | Rust binary: QUIC/H3 server (Ubuntu x86_64) bridging requests to a local VLM |
 | `local_llm/mdns/` | LAN device monitor — Windows/Python mDNS reporter + Android `devmon` app |
-| `phone/shared/koog/` | Koog AI agent framework (JetBrains, git submodule) |
 | `scripts/` | `adb`-based device setup and permission-granting helpers |
 | `docs/` | Architecture specs, integration notes, presentation plans |
 
