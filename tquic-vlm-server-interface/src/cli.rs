@@ -79,7 +79,14 @@ pub struct Args {
     /// Android app or `mpquic-client`) tunnels an HTTP/3 request to this
     /// address; its body is forwarded verbatim to `--vlm-base-url`, no
     /// packaging/repackaging, and the raw response relayed back.
-    #[arg(long, default_value = "0.0.0.0:4433")]
+    ///
+    /// Dual-stack (`[::]`) by default so a client's IPv6-only path (e.g. a
+    /// phone's rmnet/cellular interface, which frequently has no real
+    /// routable IPv4 address behind carrier CGNAT/464xlat) isn't rejected
+    /// for address-family mismatch -- relies on the OS accepting IPv4 as
+    /// v4-mapped on the same socket (Linux default, `net.ipv6.bindv6only=0`;
+    /// verify before relying on this on a non-Linux host).
+    #[arg(long, default_value = "[::]:4433")]
     pub mpquic_bind: SocketAddr,
 
     /// PEM cert for the MPQUIC tunnel terminus. Defaults to the same file

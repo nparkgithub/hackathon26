@@ -24,6 +24,7 @@ fn spawn_mpquic_tunnel(validated: &cli::ValidatedArgs) {
             validated.args.vlm_base_url.trim_end_matches('/')
         ),
         "forward_timeout_ms": validated.args.vlm_timeout_ms,
+        "enable_multipath": true,
         "multipath_algorithm": validated.args.mpquic_scheduler,
         "congestion_control": validated.args.mpquic_congestion_control,
     }))

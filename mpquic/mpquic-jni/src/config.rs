@@ -54,6 +54,14 @@ pub struct BridgeConfig {
     /// Server address to connect to (client) e.g. "192.168.1.5:4433"
     pub connect_to: Option<String>,
 
+    /// Second remote address, opposite address family from `connect_to`
+    /// (client role only). A local path whose only real address is the
+    /// other family (e.g. a phone's rmnet interface, often IPv6-only via
+    /// carrier 464xlat) is paired with this address instead of
+    /// `connect_to` when the two are dialed to the same logical server.
+    /// Optional -- omitted, every path uses `connect_to` as before.
+    pub connect_to_alt: Option<String>,
+
     /// Address to listen on (server) e.g. "0.0.0.0:4433"
     pub listen: Option<String>,
 
