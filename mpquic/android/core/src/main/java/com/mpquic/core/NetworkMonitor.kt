@@ -42,6 +42,21 @@ class NetworkMonitor(
     var cellularNetwork: Network? = null
         private set
 
+    /**
+     * Interface backing [cellularNetwork] (e.g. `rmnet0`), from its own
+     * LinkProperties rather than guessed from interface naming.
+     *
+     * A phone commonly has several rmnet* interfaces — a second one is
+     * typically a separate PDN such as IMS, which has no route to the
+     * internet. Only this one's addresses can be authorized by
+     * [cellularNetwork]'s `bindSocket()`, so only this one is safe to offer
+     * as a multipath source; adding a sibling produces a path whose first
+     * send fails ENETUNREACH.
+     */
+    @Volatile
+    var cellularIfaceName: String? = null
+        private set
+
     private val rescan = Runnable { onChange(NetUtils.interfaceAddresses()) }
 
     fun start() {
@@ -60,13 +75,24 @@ class NetworkMonitor(
         val cellularCb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 cellularNetwork = network
+                cellularIfaceName = try {
+                    cm.getLinkProperties(network)?.interfaceName
+                } catch (_: Exception) {
+                    null
+                }
                 refresh()
             }
             override fun onLost(network: Network) {
-                if (cellularNetwork == network) cellularNetwork = null
+                if (cellularNetwork == network) {
+                    cellularNetwork = null
+                    cellularIfaceName = null
+                }
                 refresh()
             }
-            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) = refresh()
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
+                if (cellularNetwork == network) cellularIfaceName = lp.interfaceName
+                refresh()
+            }
         }
         try {
             cm.requestNetwork(

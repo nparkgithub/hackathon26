@@ -39,6 +39,17 @@ class MainActivity : AppCompatActivity() {
     private var udpIngest: UdpIngest? = null
     private var h3Running = false
 
+    /**
+     * Remembers the connection fields across restarts and `install -r`.
+     *
+     * The layout's defaults are the emulator's (`10.0.2.2:4433`), so without
+     * this every rebuild silently resets a working setup -- and multipath now
+     * needs a hand-typed IPv6 alt address too, where a single transposed
+     * digit produces a config that connects on one path and quietly never
+     * adds the other. Cleared by an uninstall, not by a reinstall.
+     */
+    private val prefs by lazy { getSharedPreferences("mpquic-client", MODE_PRIVATE) }
+
     // Read from the UDP receive thread, written on the UI thread.
     @Volatile
     private var connected = false
@@ -77,6 +88,12 @@ class MainActivity : AppCompatActivity() {
         localAddrs = findViewById(R.id.localAddrs)
         autoAddrSwitch = findViewById(R.id.autoAddrSwitch)
         ifaceStatus = findViewById(R.id.ifaceStatus)
+
+        // Restore whatever last connected, before any listener is attached so
+        // this never looks like user input.
+        restoreField(R.id.serverAddr, KEY_SERVER_ADDR)
+        restoreField(R.id.serverAddrAlt, KEY_SERVER_ADDR_ALT)
+        restoreField(R.id.h3Port, KEY_H3_PORT)
 
         fileLogger = FileLogger(this, "client")
         findViewById<TextView>(R.id.logLabel).text = "Log — file: ${fileLogger?.file}"
@@ -138,6 +155,8 @@ class MainActivity : AppCompatActivity() {
             // connect_to_alt is filled in and a cellular local address is
             // actually present.
             val cellularFd = bindCellularFd(cfg)
+            saveField(R.id.serverAddr, KEY_SERVER_ADDR)
+            saveField(R.id.serverAddrAlt, KEY_SERVER_ADDR_ALT)
             appendLog("I: starting client: $cfg")
             if (engine.start(cfg.toString(), cellularFd)) {
                 connectBtn.isEnabled = false
@@ -229,6 +248,7 @@ class MainActivity : AppCompatActivity() {
                     h3Running = true
                     h3Port.isEnabled = false
                     h3Btn.text = "Stop HTTP/3 RX"
+                    saveField(R.id.h3Port, KEY_H3_PORT)
                 }
             } else {
                 engine.h3Stop()
@@ -248,6 +268,19 @@ class MainActivity : AppCompatActivity() {
             engine.send(payload)
             appendLog("I: sent $sizeMb MB test payload")
         }
+    }
+
+    /** Overwrite a field with its remembered value, if one was ever saved. */
+    private fun restoreField(id: Int, key: String) {
+        val saved = prefs.getString(key, null)?.takeIf { it.isNotBlank() } ?: return
+        findViewById<EditText>(id).setText(saved)
+    }
+
+    /** Remember a field's current value for the next launch. */
+    private fun saveField(id: Int, key: String) {
+        prefs.edit()
+            .putString(key, findViewById<EditText>(id).text.toString().trim())
+            .apply()
     }
 
     /**
@@ -320,7 +353,8 @@ class MainActivity : AppCompatActivity() {
             }
         }
         if (autoAddrSwitch.isChecked) {
-            val text = NetUtils.defaultLocalAddresses(ifaces).joinToString(", ")
+            val text = NetUtils.defaultLocalAddresses(ifaces, monitor.cellularIfaceName)
+                .joinToString(", ")
             if (localAddrs.text.toString() != text) {
                 localAddrs.setText(text)
             }
@@ -431,18 +465,40 @@ class MainActivity : AppCompatActivity() {
         statsView.text = sb.toString()
     }
 
-    private fun appendLog(line: String) {
-        fileLogger?.write(line)
-        logBuffer.append(line).append('\n')
-        if (logBuffer.length > 60_000) {
-            logBuffer.delete(0, logBuffer.length - 50_000)
-        }
+    /**
+     * Pushes the accumulated buffer into the TextView once per batch rather
+     * than once per line.
+     *
+     * Assigning a 60 KB CharSequence re-measures and re-lays out the whole
+     * thing, so doing it per line is only survivable while lines are rare. A
+     * bulk transfer echoes back as hundreds of 64 KB chunks per second, each
+     * logging a line — that saturated the main thread and ANR'd the app
+     * ("Waited 10000ms for MotionEvent") the first time multipath was fast
+     * enough to produce that rate.
+     */
+    private val logFlush = Runnable {
+        logFlushScheduled = false
         // Stick to the bottom only if the user is already there, so manual
         // scrolling through history isn't yanked back down on every line.
         val stick = !logScroll.canScrollVertically(1)
         logView.text = logBuffer
         if (stick) {
             logScroll.post { logScroll.scrollTo(0, logView.bottom) }
+        }
+    }
+    private var logFlushScheduled = false
+
+    private fun appendLog(line: String) {
+        fileLogger?.write(line)
+        logBuffer.append(line).append('\n')
+        if (logBuffer.length > 60_000) {
+            logBuffer.delete(0, logBuffer.length - 50_000)
+        }
+        // EngineController drains a whole poll's worth of lines in one go, so
+        // a posted flush coalesces that entire batch into a single re-layout.
+        if (!logFlushScheduled) {
+            logFlushScheduled = true
+            logView.post(logFlush)
         }
     }
 
@@ -453,5 +509,11 @@ class MainActivity : AppCompatActivity() {
         monitor.stop()
         engine.stop()
         fileLogger?.close()
+    }
+
+    private companion object {
+        const val KEY_SERVER_ADDR = "server_addr"
+        const val KEY_SERVER_ADDR_ALT = "server_addr_alt"
+        const val KEY_H3_PORT = "h3_port"
     }
 }

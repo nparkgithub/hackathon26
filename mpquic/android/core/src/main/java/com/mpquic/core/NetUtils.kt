@@ -16,9 +16,17 @@ object NetUtils {
 
     /**
      * Interfaces used to auto-fill multipath local addresses: Wi-Fi (wlan*)
-     * first — it becomes the initial path — then cellular (rmnet_data*).
+     * first — it becomes the initial path — then cellular (rmnet*).
+     *
+     * `rmnet`, not `rmnet_data`: the latter misses Samsung's naming. An
+     * SM-A356U carries its real cellular IPv6 on `rmnet0`/`rmnet1`, so the
+     * narrower prefix silently left cellular out of the auto-fill and the
+     * address had to be typed in by hand — the one step of multipath setup
+     * where a transposed digit produces a config that still connects.
+     * The 464xlat CLAT address sits on `v4-rmnet0`, which this does not
+     * match, so broadening the prefix does not drag it in.
      */
-    val DEFAULT_IFACE_PREFIXES = listOf("wlan", "rmnet_data")
+    val DEFAULT_IFACE_PREFIXES = listOf("wlan", "rmnet")
 
     /** All usable addresses of this device (both families), with interface names. */
     fun deviceAddresses(): List<Pair<String, String>> {
@@ -70,21 +78,37 @@ object NetUtils {
         )
     }
 
-    /** Flatten [ifaces] into the local_addresses config list (v4 then v6 per iface). */
-    fun defaultLocalAddresses(ifaces: List<IfaceAddrs>): List<String> =
+    /**
+     * Flatten [ifaces] into the local_addresses config list (v4 then v6 per
+     * iface).
+     *
+     * [cellularIface], when known, is the interface backing the
+     * internet-capable cellular network (see `NetworkMonitor`). Any *other*
+     * rmnet* interface is dropped: a phone typically also carries a separate
+     * PDN such as IMS, whose address looks perfectly usable here but has no
+     * route off the device and cannot be authorized by that network's
+     * `bindSocket()` — offering it produces a path whose first send fails
+     * ENETUNREACH. When null (cellular down, or the lookup failed) every
+     * rmnet* address is kept, which is the old behaviour.
+     */
+    fun defaultLocalAddresses(
+        ifaces: List<IfaceAddrs>,
+        cellularIface: String? = null,
+    ): List<String> =
         ifaces
+            .filter { !it.name.startsWith("rmnet") || cellularIface == null || it.name == cellularIface }
             .flatMap { iface -> iface.all.filterNot { isCarrierLocal(iface.name, it) } }
             .distinct()
 
     /**
-     * Carrier-internal cellular addresses — 192.x.x.x on rmnet_data* (e.g.
-     * the 464xlat CLAT address 192.0.0.2) — are NATed and not usable as a
+     * Carrier-internal cellular addresses — 192.x.x.x on rmnet* (e.g. the
+     * 464xlat CLAT address 192.0.0.2) — are NATed and not usable as a
      * multipath source toward external servers, so they are left out of the
      * default fill. They still appear in the interface status line and can
      * be typed into the (always editable) address field manually.
      */
     fun isCarrierLocal(ifaceName: String, ip: String): Boolean =
-        ifaceName.startsWith("rmnet_data") && ip.startsWith("192.")
+        ifaceName.startsWith("rmnet") && ip.startsWith("192.")
 
     /**
      * Whether an address can serve as a QUIC path source: loopback,
