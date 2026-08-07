@@ -71,6 +71,15 @@ Supporting component — **devmon** (`local_llm/mdns/`): the Snapdragon X Elite 
 
 ![Architecture and technology diagram](docs/visuals/architecture_technology.png)
 
+### Open Source Components
+
+![Open source components used by AllergenAR](docs/media/open-source-components.png)
+
+Upstream sources, licences and the exact versions this repository pins are documented in
+**[OPEN-SOURCE-COMPONENTS.md](OPEN-SOURCE-COMPONENTS.md)** — including the two entries that need
+legal attention: `python-zeroconf` (LGPL-2.1-or-later, the only copyleft component) and BoringSSL
+(mixed OpenSSL/SSLeay + ISC).
+
 ---
 
 ## Repository Layout
