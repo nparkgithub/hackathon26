@@ -552,8 +552,14 @@ fn remote_for(ip: IpAddr, remote: SocketAddr, remote_alt: Option<SocketAddr>) ->
     }
 }
 
-pub fn run(cfg: BridgeConfig, poll: Poll, cmd_rx: Receiver<Cmd>, running: Arc<AtomicBool>) {
-    if let Err(e) = run_inner(cfg, poll, cmd_rx, running) {
+pub fn run(
+    cfg: BridgeConfig,
+    poll: Poll,
+    cmd_rx: Receiver<Cmd>,
+    running: Arc<AtomicBool>,
+    cellular_fd: Option<i32>,
+) {
+    if let Err(e) = run_inner(cfg, poll, cmd_rx, running, cellular_fd) {
         error!("engine stopped with error: {e}");
         output::push_event(json!({"type": "error", "message": e}).to_string());
     }
@@ -565,6 +571,7 @@ fn run_inner(
     mut poll: Poll,
     cmd_rx: Receiver<Cmd>,
     running: Arc<AtomicBool>,
+    cellular_fd: Option<i32>,
 ) -> Result<(), String> {
     let is_server = cfg.role == "server";
     let config = build_quic_config(&cfg, is_server)?;
@@ -641,14 +648,35 @@ fn run_inner(
                 remote,
             ),
         };
+        // `first`/`initial_remote` always binds a fresh socket, never the
+        // injected `cellular_fd` -- in practice the UI always lists wlan*
+        // before rmnet_data*, so `first` is cellular only when there's no
+        // Wi-Fi address at all, a case the current caller (mixed-family
+        // dual-network multipath) doesn't exercise.
         let mut sock =
             QuicSocket::new(&first, registry).map_err(|e| format!("bind {first}: {e}"))?;
 
+        // A local address whose only real path is via a non-default Android
+        // network (e.g. rmnet while Wi-Fi is default) can bind() fine but
+        // still can't send -- Android never authorized the socket for that
+        // route (ENETUNREACH at send time; see docs and .scratch findings).
+        // `cellular_fd`, when present, is a socket Kotlin already created,
+        // bound, and ran through `Network.bindSocket()` -- reuse it for the
+        // first alt-family (cellular) path instead of binding a fresh one.
+        let mut cellular_fd = cellular_fd;
         let mut extra = Vec::new();
         for (ip, r) in local_remotes.iter().skip(1) {
-            let addr = sock
-                .add(&SocketAddr::new(*ip, 0), registry)
-                .map_err(|e| format!("bind {ip}: {e}"))?;
+            let is_cellular_path = remote_alt.is_some() && Some(*r) == remote_alt;
+            let addr = match (is_cellular_path, cellular_fd.take()) {
+                (true, Some(fd)) => sock
+                    .add_from_fd(fd, registry)
+                    .map_err(|e| format!("add_from_fd for {ip}: {e}"))?,
+                (_, leftover_fd) => {
+                    cellular_fd = leftover_fd;
+                    sock.add(&SocketAddr::new(*ip, 0), registry)
+                        .map_err(|e| format!("bind {ip}: {e}"))?
+                }
+            };
             extra.push((addr, *r));
         }
         shared.borrow_mut().extra_paths = extra;

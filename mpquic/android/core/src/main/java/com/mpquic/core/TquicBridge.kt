@@ -12,6 +12,16 @@ object TquicBridge {
     /** Start the engine with a JSON config. Returns 0 on success. */
     external fun nativeStart(configJson: String): Int
 
+    /**
+     * Same as [nativeStart], but [cellularFd] is an already-created,
+     * already-`Network.bindSocket()`-bound UDP socket fd (see
+     * `MainActivity`'s cellular-path handling) that the engine reuses for
+     * whichever local address needs to route over cellular specifically,
+     * instead of binding its own socket. Pass -1 for "no fd" (identical to
+     * [nativeStart]).
+     */
+    external fun nativeStartWithCellularFd(configJson: String, cellularFd: Int): Int
+
     /** Stop the engine and join its thread. */
     external fun nativeStop()
 

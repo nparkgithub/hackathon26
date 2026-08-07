@@ -92,7 +92,12 @@ Left alone all session because the user never asked for them. Not accidental.
                                      │              127.0.0.1:8080
                                      └─ else ─────► TQUIC HTTP/3 ──────► MPQUIC app
                                                     127.0.0.1:47443        ↓
+                                                                    ┌──────┴──────┐
+                                                                  wlan0        rmnet0
+                                                                  (IPv4)       (IPv6)
+                                                                    └──────┬──────┘
                                                                      EC2 54.190.37.190:10000
+                                                                     and [2600:1f14:…]:10000
                                                                            ↓
                                                                      Ollama qwen3-vl:8b
  lens text + TTS           ◄─VSCQ──  answer + verdict  ◄────────────────────┘
@@ -318,11 +323,38 @@ restriction kills the tunnel's socket and you get
 
 Then, by hand in their app:
 
-1. Set the server address back to `54.190.37.190:10000` — a reinstall resets it to the
-   emulator default `10.0.2.2:4433`
-2. **Connect**
-3. **Start HTTP/3 RX**, port `47443`
-4. Do not touch it again
+1. **Server address** — `54.190.37.190:10000`
+2. **Server address, alt family** — `[2600:1f14:2054:7dfa:cd55:3b81:b63a:3bd6]:10000`.
+   Optional: leave it blank and the tunnel runs single-path over Wi-Fi, which is a
+   perfectly good demo. Fill it in and the tunnel also uses cellular (see below).
+3. **Connect**
+4. **Start HTTP/3 RX**, port `47443`
+5. Do not touch it again
+
+As of 2026-08-07 the app **remembers 1, 2 and 4** across restarts and `install -r`, so
+in practice this is now Connect → Start HTTP/3 RX. Only a full uninstall clears them and
+brings back the emulator default `10.0.2.2:4433`.
+
+### Multipath (Wi-Fi + cellular), and why it is now safe to leave on
+
+Filling in the alt address makes the tunnel run over **both** wlan0 and rmnet0 at once.
+It needs the alt address because the two interfaces are usually different address
+families — cellular is commonly IPv6-only in practice (its IPv4 is a CGNAT/464xlat
+address that cannot source traffic), so one remote address cannot serve both paths.
+
+**This used to be actively dangerous for us and no longer is.** Android keeps cellular's
+addresses visible but does not authorize a socket to route over cellular while Wi-Fi is
+the default network, so the first send on the rmnet path failed `ENETUNREACH` — and that
+error killed the **whole engine**, taking the healthy Wi-Fi path *and the 47443 listener
+we depend on* down with it. Our leg would have gone from "slower" to "gone". Fixed
+2026-08-07: the app now routes that one socket through `Network.bindSocket()` before the
+engine uses it. Verified on an SM-A356U with both paths carrying a real transfer
+concurrently, `lost=0` on each.
+
+**None of this changes the four requirements above** — it is all below the loopback
+HTTP/3 hop, so `KwikH3Transport` and `TquicAnswerProvider` are untouched by it. If the
+alt address is wrong or cellular is unavailable, the tunnel simply runs single-path;
+it does not fail.
 
 ### Verifying their side alone
 
@@ -572,8 +604,12 @@ Kept manual on purpose.
 
 **The order that matters:**
 
-1. **Bring the MPQUIC app up first.** Set the server address, **Connect**, then
-   **Start HTTP/3 RX** on 47443. **Then leave it alone** — do not switch back to it.
+1. **Bring the MPQUIC app up first.** Its address fields are remembered now, so this is
+   usually just **Connect**, then **Start HTTP/3 RX** on 47443 — check the addresses
+   match §7 first. **Then leave it alone** — do not switch back to it.
+   To show multipath, confirm the stats block lists **two** paths (wlan0 and rmnet0)
+   before moving on; one path means the alt address is missing or cellular is down,
+   which still demos fine, just single-path.
 2. Open **ARFood** on the phone. Overflow menu → start Wi-Fi Direct group.
 3. On the glasses, discover and connect to the phone.
 4. Tap to capture, speak the question.

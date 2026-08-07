@@ -30,6 +30,33 @@ class NetworkMonitor(
     private val callbacks = mutableListOf<ConnectivityManager.NetworkCallback>()
     private var started = false
 
+    /**
+     * The live cellular [Network] handle, if the held cellular request
+     * currently has one. `requestNetwork()` keeps rmnet's addresses alive so
+     * they show up in [onChange], but a plain socket still won't route over
+     * it while Wi-Fi is default -- callers that need to actually send on this
+     * network must call `network.bindSocket(...)` on this object themselves
+     * (see `MainActivity`'s cellular-path handling).
+     */
+    @Volatile
+    var cellularNetwork: Network? = null
+        private set
+
+    /**
+     * Interface backing [cellularNetwork] (e.g. `rmnet0`), from its own
+     * LinkProperties rather than guessed from interface naming.
+     *
+     * A phone commonly has several rmnet* interfaces — a second one is
+     * typically a separate PDN such as IMS, which has no route to the
+     * internet. Only this one's addresses can be authorized by
+     * [cellularNetwork]'s `bindSocket()`, so only this one is safe to offer
+     * as a multipath source; adding a sibling produces a path whose first
+     * send fails ENETUNREACH.
+     */
+    @Volatile
+    var cellularIfaceName: String? = null
+        private set
+
     private val rescan = Runnable { onChange(NetUtils.interfaceAddresses()) }
 
     fun start() {
@@ -43,14 +70,41 @@ class NetworkMonitor(
         )) {
             register(NetworkRequest.Builder().addTransportType(transport).build(), request = false)
         }
-        // Hold cellular up alongside Wi-Fi.
-        register(
-            NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build(),
-            request = true,
-        )
+        // Hold cellular up alongside Wi-Fi, and track its Network handle so
+        // callers can bindSocket() onto it.
+        val cellularCb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) {
+                cellularNetwork = network
+                cellularIfaceName = try {
+                    cm.getLinkProperties(network)?.interfaceName
+                } catch (_: Exception) {
+                    null
+                }
+                refresh()
+            }
+            override fun onLost(network: Network) {
+                if (cellularNetwork == network) {
+                    cellularNetwork = null
+                    cellularIfaceName = null
+                }
+                refresh()
+            }
+            override fun onLinkPropertiesChanged(network: Network, lp: LinkProperties) {
+                if (cellularNetwork == network) cellularIfaceName = lp.interfaceName
+                refresh()
+            }
+        }
+        try {
+            cm.requestNetwork(
+                NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_CELLULAR)
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                    .build(),
+                cellularCb,
+            )
+            callbacks.add(cellularCb)
+        } catch (_: Exception) {
+        }
         refresh()
     }
 
@@ -65,6 +119,7 @@ class NetworkMonitor(
             }
         }
         callbacks.clear()
+        cellularNetwork = null
     }
 
     /** Re-enumerate now (debounced, on the main thread). */

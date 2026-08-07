@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::SocketAddr;
 
-use log::debug;
+use log::{debug, warn};
 use mio::net::UdpSocket;
 use mio::{Interest, Registry, Token};
 use slab::Slab;
@@ -58,6 +58,34 @@ impl QuicSocket {
     /// Bind an additional local address (an extra multipath path).
     pub fn add(&mut self, local: &SocketAddr, registry: &Registry) -> std::io::Result<SocketAddr> {
         let socket = UdpSocket::bind(*local)?;
+        self.insert(socket, registry)
+    }
+
+    /// Add an additional path from an already-created, already-bound fd
+    /// (e.g. an Android `DatagramSocket` that's been through
+    /// `Network.bindSocket()`) instead of binding a fresh one ourselves.
+    /// Needed because a socket this process creates and binds itself has no
+    /// route authorization for a non-default Android network (cellular
+    /// while Wi-Fi is default) -- see `engine.rs`'s `cellular_fd` handling.
+    ///
+    /// Takes ownership of `fd`: on success it's owned by the returned
+    /// socket (closed on drop like any other); on error the fd is still
+    /// consumed (closed), matching `UdpSocket::from_raw_fd`'s contract that
+    /// the caller hands off ownership unconditionally.
+    #[cfg(unix)]
+    pub fn add_from_fd(
+        &mut self,
+        fd: std::os::unix::io::RawFd,
+        registry: &Registry,
+    ) -> std::io::Result<SocketAddr> {
+        use std::os::unix::io::FromRawFd;
+        let std_socket = unsafe { std::net::UdpSocket::from_raw_fd(fd) };
+        std_socket.set_nonblocking(true)?;
+        let socket = UdpSocket::from_std(std_socket);
+        self.insert(socket, registry)
+    }
+
+    fn insert(&mut self, socket: UdpSocket, registry: &Registry) -> std::io::Result<SocketAddr> {
         let local_addr = socket.local_addr()?;
         let sid = self.socks.insert(socket);
         self.addrs.insert(local_addr, sid);
@@ -110,6 +138,19 @@ impl QuicSocket {
     }
 }
 
+/// Whether a send error means "this path can't carry traffic" rather than
+/// "this socket is broken" -- the set Android produces when a path's network
+/// is unroutable or the socket was never authorized for it.
+fn is_path_local(kind: ErrorKind) -> bool {
+    matches!(
+        kind,
+        ErrorKind::NetworkUnreachable
+            | ErrorKind::HostUnreachable
+            | ErrorKind::PermissionDenied
+            | ErrorKind::AddrNotAvailable
+    )
+}
+
 impl PacketSendHandler for QuicSocket {
     fn on_packets_send(&self, pkts: &[(Vec<u8>, PacketInfo)]) -> tquic::Result<usize> {
         let mut count = 0;
@@ -117,6 +158,22 @@ impl PacketSendHandler for QuicSocket {
             if let Err(e) = self.send_to(pkt, info.src, info.dst) {
                 if e.kind() == ErrorKind::WouldBlock {
                     return Ok(count);
+                }
+                // A routing/policy failure belongs to one path, not to the
+                // connection: on Android a cellular path can be unroutable
+                // (unauthorized socket, radio asleep, PDN torn down) while
+                // Wi-Fi is perfectly healthy. Returning an error here aborts
+                // process_connections and kills the whole endpoint -- which
+                // took down the healthy path *and* the local HTTP/3 listener
+                // with it. Drop the datagram instead and let tquic's own loss
+                // detection retire the path; QUIC is built to lose packets.
+                if is_path_local(e.kind()) {
+                    warn!(
+                        "dropping packet for unroutable path {} -> {}: {e}",
+                        info.src, info.dst
+                    );
+                    count += 1;
+                    continue;
                 }
                 return Err(tquic::Error::InvalidOperation(format!(
                     "socket send_to(): {e:?}"

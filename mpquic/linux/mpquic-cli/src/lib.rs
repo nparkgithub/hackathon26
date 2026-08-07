@@ -192,7 +192,7 @@ pub fn run(o: Options) -> i32 {
     let engine_running = running.clone();
     let join = std::thread::Builder::new()
         .name("mpquic-engine".into())
-        .spawn(move || engine::run(cfg, poll, cmd_rx, engine_running))
+        .spawn(move || engine::run(cfg, poll, cmd_rx, engine_running, None))
         .expect("spawn engine thread");
 
     {

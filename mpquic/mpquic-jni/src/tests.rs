@@ -28,7 +28,7 @@ fn spawn_engine(cfg_json: serde_json::Value) -> (mpsc::Sender<Cmd>, Arc<AtomicBo
     let (tx, rx) = mpsc::channel();
     let running = Arc::new(AtomicBool::new(true));
     let r = running.clone();
-    std::thread::spawn(move || engine::run(cfg, poll, rx, r));
+    std::thread::spawn(move || engine::run(cfg, poll, rx, r, None));
     (tx, running)
 }
 
