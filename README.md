@@ -59,6 +59,8 @@ Answer rendered as AR overlay on glasses + spoken aloud by TTS
 
 Supporting component — **devmon** (`local_llm/mdns/`): the Snapdragon X Elite advertises itself on the LAN via `_devmon._tcp.local.` (mDNS/NSD), letting the phone discover it automatically with no manual IP entry.
 
+
+![Architecture and technology diagram](docs/visuals/architecture_technology.png)
 ---
 
 ## Repository Layout
@@ -214,6 +216,82 @@ If `pip install` fails with `SSLCertVerificationError` behind a corporate proxy,
 
 ---
 
+## ARFood — the Glasses and Phone Apps (`VideoShowCase/`)
+
+The two apps a judge interacts with directly. Both live in the `VideoShowCase` git
+submodule as one Gradle project with two modules.
+
+**Glasses app** (`glass` module → RayNeo X3): the wearable front end. One tap on the
+touchpad captures a photo, transcribes your spoken question on-device, and sends both to
+the phone over Wi-Fi Direct. The answer comes back onto the lens, colour-coded by
+verdict (white = safe, red = not safe, amber = check first), and is read aloud —
+tap once to stop the speech.
+
+**Phone app** (`app` module → any Android 12+ phone, "ARFood"): the orchestration brain.
+It hosts the Wi-Fi Direct group, receives each capture, checks the food against the
+on-device allergy profile (peanuts, tree nuts, shellfish by default) via a vision model,
+and routes each request to whichever backend is healthy — the local PC over HTTP/1.1, or
+the cloud over hand-written HTTP/3 through the MPQUIC tunnel. The screen shows a live
+session history: every capture with its photo, question, verdict pill and timestamp,
+plus which compute path answered it.
+
+### Build
+
+Requires JDK 17 or 21 on `JAVA_HOME` and the Android SDK (set `ANDROID_HOME`, or put
+`sdk.dir=` in `VideoShowCase/local.properties`).
+
+```bash
+git submodule update --init VideoShowCase   # if you haven't already
+cd VideoShowCase
+./gradlew :app:assembleDebug :glass:assembleDebug
+```
+
+APKs land at:
+
+- Phone — `app/build/outputs/apk/debug/app-debug.apk`
+- Glasses — `glass/build/outputs/apk/debug/glass-debug.apk`
+
+### Install
+
+With the phone and the RayNeo X3 both attached over adb (`adb devices` shows two serials):
+
+```bash
+adb -s <PHONE_SERIAL>   install -r app/build/outputs/apk/debug/app-debug.apk
+adb -s <GLASSES_SERIAL> install -r glass/build/outputs/apk/debug/glass-debug.apk
+
+# grant camera/mic/nearby-device permissions on both in one step:
+cd .. && ./scripts/glass_dev_setup.sh both
+```
+
+(Without the script, accept the runtime permission prompts on first launch instead.)
+
+### Run
+
+Have at least one backend up first — the local host (Step 1 below) or the cloud path
+(Step 2). The phone app picks whichever is healthy on its own.
+
+1. **Phone** — open **ARFood**, tap the **⋮ menu → start the Wi-Fi Direct group**.
+   The status card reads *"Group created. Waiting for camera device…"*.
+2. **Glasses** — open the app, pick **Discover devices**, and select the phone when it
+   appears. The phone's status flips to *"Glasses connected"* and shows the capture
+   resolution; on the lens, choose **Capture + query**.
+3. **Ask** — look at the food, tap **"Tap to capture and ask"**, and speak
+   ("Can I eat this?"). The lens shows the query being transcribed, then
+   *Waiting for answer…* on both screens.
+4. **Answer** — in roughly 10–20 s the verdict lands on the lens and is spoken aloud;
+   the phone shows the same answer with a SAFE FOR YOU / NOT SAFE FOR YOU /
+   CHECK BEFORE EATING pill, and the *Compute* line names the path that served it
+   (local DevMon → PC, or remote TQUIC → EC2). Tap any history row to revisit it;
+   tap a photo to read a label full-screen; **Cancel** abandons a slow request.
+
+To see the failover live: answer one query with the local host up, stop the local
+host, and ask again — the next capture routes to the cloud with no reconfiguration,
+visible on the *Compute* line.
+
+A finished demo film and slide deck are in [`demo/`](demo/).
+
+---
+
 ## Running and Usage
 
 ### AllergenAR demo — full end-to-end
@@ -239,11 +317,17 @@ Ollama must be running on the same EC2 instance with `ollama pull qwen3-vl:8b`.
 
 **Step 3 — Start the phone app and glasses app**
 
-Install `VideoShowCase` glass APK on the RayNeo glasses and phone APK on the Samsung device. Launch both; the glasses connect to the phone over Wi-Fi Direct automatically.
+Build, install and pair the two apps as described in
+[ARFood — the Glasses and Phone Apps](#arfood--the-glasses-and-phone-apps-videoshowcase):
+create the Wi-Fi Direct group from the phone's menu, then discover and select the phone
+from the glasses.
 
 **Step 4 — Ask a question**
 
-Wear the glasses, look at food, press the capture button (or use the wake word), and ask aloud "Are there any allergens in this?". The glasses capture a JPEG + transcript, the phone routes it locally or to cloud, and the answer appears on the lens and is spoken aloud.
+Wear the glasses, look at food, tap **"Tap to capture and ask"**, and ask aloud
+"Can I eat this?". The glasses send the JPEG + transcript to the phone, the phone routes
+it locally or to cloud, and the verdict appears on the lens — colour-coded and spoken
+aloud, with the full answer and compute path mirrored in the phone's session history.
 
 ---
 
