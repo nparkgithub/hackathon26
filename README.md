@@ -320,13 +320,21 @@ A finished demo film and slide deck are in [`demo/`](demo/).
 
 1. Launch an Ubuntu 26.04 EC2 instance. A GPU instance (e.g. `g6.xlarge`) is recommended for reasonable Qwen3-VL 8B latency; CPU-only works but answers more slowly.
 2. In the instance's security group, allow inbound UDP on the QUIC port (`19500` by default) from the phone's network — see [Networking Notes](#networking-notes). Ollama's port (`11434`) stays loopback-only and does **not** need a security-group rule.
-3. Install Ollama and pull the model:
+3. **GPU instances only** — install the NVIDIA driver so Ollama can see the GPU (skip on CPU-only instances):
+   ```bash
+   sudo apt update
+   sudo apt install -y ubuntu-drivers-common
+   sudo ubuntu-drivers autoinstall
+   sudo reboot
+   ```
+   After the instance comes back up, confirm the driver loaded: `nvidia-smi`. Without this step Ollama runs on CPU with no error or warning.
+4. Install Ollama and pull the model:
    ```bash
    curl -fsSL https://ollama.com/install.sh | sh
    ollama pull qwen3-vl:8b
    ```
-4. Verify Ollama's OpenAI-compatible API locally: `curl http://127.0.0.1:11434/v1/models`.
-5. Build `tquic-vlm-server-interface` per [step 2 above](#2-tquic-vlm-server-interface--ubuntu-x8664-server) if you haven't already, then run it pointed at Ollama:
+5. Verify Ollama's OpenAI-compatible API locally: `curl http://127.0.0.1:11434/v1/models`. On a GPU instance, `ollama ps` should show `100% GPU` for the loaded model.
+6. Build `tquic-vlm-server-interface` per [step 2 above](#2-tquic-vlm-server-interface--ubuntu-x8664-server) if you haven't already, then run it pointed at Ollama:
    ```bash
    ./target/release/tquic-vlm-server-interface \
      --bind 0.0.0.0:19500 \
@@ -334,7 +342,7 @@ A finished demo film and slide deck are in [`demo/`](demo/).
      --vlm-model qwen3-vl:8b
    # --help lists all flags: congestion control, body-size cap, timeouts, mpquic scheduler
    ```
-6. Confirm that the EC2 security group allow inbound UDP on the bind port before testing from the phone.
+7. Confirm that the EC2 security group allow inbound UDP on the bind port before testing from the phone.
 
 **Step 3 — Start the phone app and glasses app**
 
