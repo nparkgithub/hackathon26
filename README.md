@@ -10,8 +10,6 @@ A Samsung Galaxy S25 Ultra acts as the orchestration brain. It tries a nearby Sn
 
 ![AllergenAR collaborative devices](docs/visuals/collaborative_devices.png)
 
-![AllergenAR architecture and technology](docs/visuals/architecture_technology.png)
-
 ---
 
 ## Team
@@ -61,6 +59,7 @@ Supporting component — **devmon** (`local_llm/mdns/`): the Snapdragon X Elite 
 
 
 ![Architecture and technology diagram](docs/visuals/architecture_technology.png)
+
 ---
 
 ## Repository Layout
