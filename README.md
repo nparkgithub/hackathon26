@@ -129,6 +129,12 @@ git submodule update --init VideoShowCase
 
 ### 2. tquic-vlm-server-interface — Ubuntu x86_64 server
 
+Initialize the vendored `tquic` submodule first (also needed by `mpquic-jni`, which this crate depends on for its `--mpquic-bind` tunnel mode):
+
+```bash
+git submodule update --init --recursive mpquic/tquic
+```
+
 ```bash
 sudo apt update && sudo apt install -y build-essential cmake perl pkg-config
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y
@@ -137,19 +143,47 @@ source "$HOME/.cargo/env"
 
 cd tquic-vlm-server-interface
 cargo build --release
+cargo test --release   # 15 tests, mocked, no network or real VLM needed
 ```
 
 Open the QUIC port (UDP — not TCP):
 
 ```bash
 sudo ufw allow 19500/udp
+# and, if also using --mpquic-bind (see "MPQUIC apps" under Running and Usage), that port too:
+sudo ufw allow 10000/udp
 ```
+
+Full build gotchas (disk space, cross-compiling from non-x86_64, timing) are in [`tquic-vlm-server-interface/docs/build-guide.md`](tquic-vlm-server-interface/docs/build-guide.md).
 
 ### 3. mpquic Android apps — Windows ARM64 host (vcvarsall x64 shell required)
 
-```bat
-:: Prerequisites: Rust 1.90, cargo-ndk, Android NDK 27.2, CMake 3.22, VS Build Tools
+#### Toolchain
 
+| Tool | Version | Install |
+|---|---|---|
+| Rust | 1.90.0 (pinned, `mpquic/mpquic-jni/rust-toolchain.toml`) | `rustup toolchain install 1.90.0` — auto-selected on `cd` into the crate |
+| cargo-ndk | unpinned in-repo — any recent release | `cargo install cargo-ndk` |
+| Android NDK | 27.2.12479018 | Android Studio → SDK Manager → SDK Tools → NDK (Side by side), or `sdkmanager --install "ndk;27.2.12479018"` |
+| CMake | 3.22.1 | Android Studio → SDK Manager → SDK Tools → CMake, or `sdkmanager --install "cmake;3.22.1"` |
+| Gradle | 8.13 — **manually provisioned, not a wrapper** | download from gradle.org and unzip to `mpquic/gradle-8.13/` (gitignored; every other Gradle project in this repo ships `./gradlew` — this one doesn't) |
+| JDK | 17 (build used: Eclipse Adoptium `jdk-17.0.20.8-hotspot`) | install Eclipse Temurin 17 |
+| VS Build Tools | unpinned | Visual Studio Installer → "Desktop development with C++" (provides `vcvarsall.bat` + x64 MSVC linker) |
+| Android SDK | compileSdk/targetSdk 35, minSdk 26 | via Android Studio |
+
+Why `vcvarsall x64`: the host is Windows on ARM64, but there's no ARM64 MSVC linker installed, so the build runs under the x64 toolchain (`x86_64-pc-windows-msvc`) inside a `vcvarsall.bat x64`-initialized shell (Start Menu → "x64 Native Tools Command Prompt", or run `vcvarsall.bat x64` yourself first).
+
+#### Build setup
+
+Before the first build, initialize the vendored `tquic` submodule (both this crate and the Linux CLI need it — not done automatically by a plain `git clone`):
+
+```bat
+git submodule update --init --recursive mpquic/tquic
+```
+
+Then, from a `vcvarsall x64` shell:
+
+```bat
 :: 1) Build native .so for both ABIs
 set ANDROID_NDK_HOME=%LOCALAPPDATA%\Android\Sdk\ndk\27.2.12479018
 set CMAKE_GENERATOR=Ninja
@@ -164,36 +198,99 @@ cd ..\android
 ..\gradle-8.13\bin\gradle :client:assembleDebug :server:assembleDebug
 ```
 
+`CMAKE_GENERATOR=Ninja` is required, not optional: BoringSSL's build (inside vendored `tquic`) needs it because of a locally-applied patch (`mpquic/patches/tquic-android-cross-build.patch`) that fixes a Windows→Android cross-build path bug — the upstream code checked the *host's* MSVC-ness instead of the *target's*, so without forcing Ninja it looks for BoringSSL's static libs in the wrong subdirectory.
+
 APKs land in:
 - `mpquic/android/client/build/outputs/apk/debug/client-debug.apk`
 - `mpquic/android/server/build/outputs/apk/debug/server-debug.apk`
 
-Pre-built copies are already at `mpquic/apks/`.
+Pre-built copies are already at `mpquic/apks/`. Only debug builds are supported today — no release signing config exists in any module.
+
+#### Testing without a device
+
+The engine (`mpquic-jni`) that backs both the Android apps and the Linux CLI has real, non-mocked loopback test coverage:
+
+```bash
+cd mpquic/mpquic-jni
+cargo test
+```
+
+6 tests: echo round-trip (IPv4 + IPv6), per-path byte accounting under the `redundant` scheduler, a connection surviving 3× its idle timeout via keepalive, a full HTTP/3-over-MPQUIC JPEG relay round-trip, and mixed-address-family local IPs being filtered out cleanly rather than crashing the engine.
+
+The Android modules also have JVM-only unit tests (no device/emulator needed):
+
+```bat
+cd mpquic\android
+..\gradle-8.13\bin\gradle :core:testDebugUnitTest
+```
+
+`NetUtilsTest` covers address-family filtering, carrier CGNAT/CLAT address exclusion, and host:port parsing; `UdpIngestTest` covers the UDP-RX ingest feature's bind/stop lifecycle. There are no automated on-device/instrumented tests for either app — `tquic-vlm-server-interface/docs/mpquic-tunnel-verification.md` is the closest thing to device-level verification, and it's a manual runbook, not automation.
 
 ### 4. mpquic Linux CLI
 
-Pre-built x86-64 binaries are already at `mpquic/linux/bin/x86_64/` — no build step needed.
+#### Toolchain
 
-To build from source (x86-64 Linux):
+| Tool | Version | Install |
+|---|---|---|
+| Rust | 1.90.0 (pinned, `mpquic/linux/mpquic-cli/rust-toolchain.toml`) | `rustup toolchain install 1.90.0` |
+| cmake | any recent | `sudo apt install -y cmake` |
+| ninja-build | any recent | `sudo apt install -y ninja-build` — forces the `cmake` crate to emit Ninja files for BoringSSL's build |
+| nasm | any recent | `sudo apt install -y nasm` |
+| gcc / g++ | native: `gcc`; cross: `gcc-x86-64-linux-gnu` + `g++-x86-64-linux-gnu` | `sudo apt install -y gcc` (native) |
+| perl | any recent (usually preinstalled on Ubuntu) | `sudo apt install -y perl` — used by BoringSSL's build scripts; not previously listed here but genuinely required |
+
+Prebuilt binaries are already checked in at `mpquic/linux/bin/x86_64/` — most developers don't need to build this at all.
+
+#### Build setup
+
+Initialize the vendored `tquic` submodule first (shared with the Android build):
 
 ```bash
-sudo apt install -y cmake ninja-build nasm gcc
+git submodule update --init --recursive mpquic/tquic
+```
+
+**Native x86-64 build:**
+
+```bash
+sudo apt install -y cmake ninja-build nasm gcc perl
 cd mpquic/linux/mpquic-cli
 cargo build --release
 # binaries: target/release/mpquic-{client,server}
 ```
 
-Cross-compiling from an aarch64 Linux host:
+**Cross-compiling from an aarch64 Linux host:**
 
 ```bash
-sudo apt install cmake ninja-build nasm gcc-x86-64-linux-gnu g++-x86-64-linux-gnu
+sudo apt install cmake ninja-build nasm gcc-x86-64-linux-gnu g++-x86-64-linux-gnu perl
 rustup target add x86_64-unknown-linux-gnu
 cd mpquic/linux/mpquic-cli
 export CC_x86_64_unknown_linux_gnu=x86_64-linux-gnu-gcc
 export CXX_x86_64_unknown_linux_gnu=x86_64-linux-gnu-g++
+export AR_x86_64_unknown_linux_gnu=x86_64-linux-gnu-ar
 export CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_LINKER=x86_64-linux-gnu-gcc
 export CMAKE_GENERATOR=Ninja
 cargo build --release --target x86_64-unknown-linux-gnu
+```
+
+**Or use the turnkey script**, which does all of the above and can also smoke-test the result:
+
+```bash
+bash mpquic/linux/build_x86_64.sh               # cross-build, copies binaries into mpquic/linux/bin/x86_64/
+bash mpquic/linux/build_x86_64.sh --native-test  # also runs a same-arch build + loopback smoke test
+```
+
+> **Gotcha**: this build shells out to `cmake`/BoringSSL, which can fail on a path containing spaces. `build_x86_64.sh` works around this by `rsync`ing sources to `~/mpquic-build` first; if building manually from a path with a space in it (e.g. a Windows-mounted path like `/mnt/c/Users/<first> <last>/...`), do the same — build from a spaces-free path instead.
+
+#### Testing without a device
+
+The `mpquic-cli` crate itself has no dedicated tests — it's a thin frontend. All real coverage lives in the shared engine: the same `cargo test` in `mpquic/mpquic-jni` covered under the Android section above (6 tests) applies here unchanged, since both consume the identical engine.
+
+The one thing that exercises the actual compiled `mpquic-client`/`mpquic-server` binaries is the turnkey script's smoke test:
+
+```bash
+bash mpquic/linux/build_x86_64.sh --native-test
+# builds natively, starts mpquic-server, runs mpquic-client --send-mb 1 --oneshot against it,
+# greps the client log for "send complete" and "recv" -> SMOKE TEST PASSED/FAILED
 ```
 
 ### 5. devmon Android app (LAN device monitor / mDNS advertiser)
@@ -389,9 +486,19 @@ adb install mpquic/apks/server-debug.apk
 adb install mpquic/apks/client-debug.apk
 ```
 
-1. **Server device**: open the server app, choose listen address (`0.0.0.0:4433`), pick scheduler and congestion control, tap **Start**.
-2. **Client device**: enter `<server-IP>:4433`. The local-IP list pre-fills with Wi-Fi + cellular interfaces. Choose scheduler (`minrtt` / `redundant` / `roundrobin`), tap **Connect**, then **Send** a test payload (1–100 MB).
-3. Per-path graphs (bytes/s per interface) update every 2 s. Kill Wi-Fi to watch traffic shift to cellular in real time.
+**Server app**: enter a listen address (default `0.0.0.0:4433`), pick scheduler (`minrtt` / `redundant` / `roundrobin`), congestion control (`bbr` / `cubic` / `bbr3` / `copa`), and log level (`off`…`trace`); leave **Multipath** and **Echo** on (echo sends received payload straight back on its own path — useful for the throughput demo); tap **Start**. A server can accept more than one client connection at once — its log/stats lines are prefixed `conn#<index>` to tell them apart.
+
+**Client app**: enter the server as `<server-IP>:4433`. Optionally set a second, different-address-family remote address (e.g. an IPv6 address alongside an IPv4 primary) so a cellular-only path can still join the connection under carrier CGNAT/464xlat. The local-IP list pre-fills with every local interface (Wi-Fi + cellular); pick scheduler/congestion-control/log-level to match, leave **Multipath** on, choose a bulk-send size from the fixed steps (1 / 2 / 5 / 10 / 25 / 30 / 40 / 50 / 100 MB), tap **Connect**, then **Send** (or **Send bulk**). Disconnecting resets the UI automatically — **Connect** re-enables as soon as the `disconnected` event fires, no app restart needed.
+
+Per-path graphs (bytes/s per interface) update every 2 s, computed client-side from successive `stats` events. Kill Wi-Fi mid-transfer to watch traffic shift to cellular in real time.
+
+**Reading the on-screen log** — both apps print the same event vocabulary the Linux CLI emits (see the flag reference below): `connected`, `path_added` / `path_skipped` (with a reason, e.g. address-family mismatch), `data`, `stats`, `send_complete` (per-path byte/packet totals), `h3_listening` / `h3_request` / `h3_response` / `h3_error`, `error`, `disconnected`, `stopped`. Logs are also written to a file, shown as "Log — file: `<path>`" above the log pane.
+
+**On-device log files** need one-time storage access (harmless to skip — logging silently falls back to the app's private scoped storage otherwise):
+```bash
+adb shell appops set <package-name> MANAGE_EXTERNAL_STORAGE allow
+# package-name: com.mpquic.client or com.mpquic.server
+```
 
 **H3 tunnel mode** — pipe JPEG images over MPQUIC from a desktop:
 
@@ -402,6 +509,21 @@ pip install aioquic
 python mpquic/tools/h3_sender.py <client-ip> photo.jpg
 # or: python mpquic/tools/h3_sender.py <client-ip> --size-mb 4
 ```
+
+**UDP RX mode** — separately, the client can also ingest plain UDP datagrams on a local port and forward each one over the MPQUIC connection as payload (enter a port, tap the UDP toggle) — distinct from the JPEG-oriented H3 tunnel above, useful for piping arbitrary local UDP traffic through the multipath link.
+
+**Connecting to `tquic-vlm-server-interface` instead of another Android app** — the client app's server address doesn't have to be another Android device. Pointed at a real `tquic-vlm-server-interface` instance running in MPQUIC-tunnel-terminus mode, this is the actual cloud-fallback path AllergenAR uses in production, not just a loopback demo:
+
+```bash
+# On the server box (Ubuntu, Ollama already running — see step 2 above), in addition to --bind:
+./target/release/tquic-vlm-server-interface \
+  --bind 0.0.0.0:19500 \
+  --mpquic-bind 0.0.0.0:10000 \
+  --vlm-base-url http://127.0.0.1:11434/v1 \
+  --vlm-model qwen3-vl:8b
+```
+
+On the client app, **Connect** to `<server-IP>:10000` (the `--mpquic-bind` port, not `--bind`'s — those are two independent UDP listeners in the same process), then use **H3 tunnel mode** above instead of a raw **Send**: whatever's POSTed to the client's local HTTP/3 RX port gets tunneled to the server and forwarded verbatim to the VLM backend, with the response relayed all the way back. The full step-by-step (building a real OpenAI-shaped image request, expected log output on all three machines) is in [`tquic-vlm-server-interface/docs/mpquic-tunnel-verification.md`](tquic-vlm-server-interface/docs/mpquic-tunnel-verification.md) — worth reading before trying this path for the first time, since a `--mpquic-bind` UDP port needs its own firewall/security-group rule separate from `--bind`'s.
 
 ---
 
@@ -418,9 +540,45 @@ bin/x86_64/mpquic-server --listen 0.0.0.0:4433 \
 bin/x86_64/mpquic-client --connect 127.0.0.1:4433 --send-mb 5 --oneshot
 
 # Multipath: two local IPs, roundrobin scheduler
-bin/x86_64/mpquic-client --connect <server:4433> \
-  --local 192.168.1.10,10.60.0.2 --scheduler redundant --send-mb 10 --oneshot
+bin/x86_64/mpquic-client --connect <server-ip>:4433 \
+  --local <local-ip-1>,<local-ip-2> --scheduler roundrobin --send-mb 10 --oneshot
 ```
+
+`certs/server.crt`/`server.key` are the same self-signed demo cert/key the Android apps and `tquic-vlm-server-interface` use (`CN=mpquic`, not for production).
+
+#### Full flag reference
+
+Flag parsing is hand-rolled (`mpquic/linux/mpquic-cli/src/lib.rs`, no `clap`) — these `--help` usage strings are the complete, authoritative flag list; nothing else exists beyond them.
+
+**`mpquic-server`** (default shown in parens):
+
+| Flag | Meaning |
+|---|---|
+| `--listen <ip:port>` | bind address (`0.0.0.0:4433`) |
+| `--cert FILE` / `--key FILE` | TLS pair (`server.crt` / `server.key`) |
+| `--scheduler S` | `minrtt` \| `redundant` \| `roundrobin` (`minrtt`) |
+| `--cc C` | `bbr` \| `cubic` \| `bbr3` \| `copa` (`bbr`) |
+| `--log-level L` | `off`\|`error`\|`warn`\|`info`\|`debug`\|`trace` (`info`) |
+| `--no-multipath` | disable multipath (on by default) |
+| `--no-echo` | don't echo received payload back (echo on by default) |
+| `--stats` | print per-second stats events |
+
+**`mpquic-client`**:
+
+| Flag | Meaning |
+|---|---|
+| `--connect <ip:port>` | server address — **required**; `[v6]:port` for IPv6 |
+| `--local a,b,c` | local IPs, one QUIC path per IP (first = initial path) |
+| `--scheduler S` / `--cc C` / `--log-level L` / `--no-multipath` / `--stats` | same as server |
+| `--send-mb N` | send N MB of test payload once connected |
+| `--message TEXT` | send TEXT once connected |
+| `--h3-port N` | run a local HTTP/3 listener on port N; requests it receives (e.g. large JPEG POSTs) are tunneled over MPQUIC and the peer's response is returned |
+| `--cert FILE` / `--key FILE` | TLS pair for that HTTP/3 listener |
+| `--oneshot` | exit after the send-complete summary |
+
+> **Gotcha**: an unrecognized `--scheduler`/`--cc` value is **not** rejected — it silently falls back to `minrtt`/`bbr` (`mpquic/mpquic-jni/src/config.rs`'s catch-all match arm). A typo like `--cc bbr2` runs fine, just not with the algorithm you meant.
+
+Both binaries print the same JSON-ish event stream the Android apps' log panes show: `listening`, `connected`, `path_added` / `path_skipped`, `data`, `stats` (with `--stats`), `send_complete`, `h3_listening` / `h3_request` / `h3_response` / `h3_error`, `error`, `disconnected`, `stopped`.
 
 ---
 
