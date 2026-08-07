@@ -1,5 +1,0 @@
-Manifest-Version: 1.0
-Implementation-Title: http-client-ktor
-Implementation-Version: 1.1.1-SNAPSHOT
-Automatic-Module-Name: http.client.ktor.jvm
-

@@ -1,5 +1,0 @@
-Manifest-Version: 1.0
-Implementation-Title: prompt-executor-google-client
-Implementation-Version: 1.1.1-beta-SNAPSHOT
-Automatic-Module-Name: prompt.executor.google.client.jvm
-
