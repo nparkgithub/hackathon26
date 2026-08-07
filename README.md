@@ -6,6 +6,10 @@ AllergenAR lets a person wearing RayNeo AR glasses look at any food, ask a spoke
 
 A Samsung Galaxy S25 Ultra acts as the orchestration brain. It tries a nearby Snapdragon X Elite PC first (Qwen3-VL 4B, running locally via LM Studio, zero cloud cost, offline-capable). If no local host is found, it falls back transparently to an AWS EC2 server running Qwen3-VL 8B over a Multipath QUIC connection that rides Wi-Fi and 5G simultaneously, surviving a dropped network without dropping the request.
 
+![AllergenAR glasses detecting food](docs/visuals/hero_ar_glasses_food.png)
+
+![AllergenAR collaborative devices](docs/visuals/collaborative_devices.png)
+
 ---
 
 ## Team
@@ -55,6 +59,7 @@ Supporting component — **devmon** (`local_llm/mdns/`): the Snapdragon X Elite 
 
 
 ![Architecture and technology diagram](docs/visuals/architecture_technology.png)
+
 ---
 
 ## Repository Layout
