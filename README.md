@@ -53,6 +53,8 @@ Answer rendered as AR overlay on glasses + spoken aloud by TTS
 
 Supporting component — **devmon** (`local_llm/mdns/`): the Snapdragon X Elite advertises itself on the LAN via `_devmon._tcp.local.` (mDNS/NSD), letting the phone discover it automatically with no manual IP entry.
 
+
+![Architecture and technology diagram](docs/visuals/architecture_technology.png)
 ---
 
 ## Repository Layout
