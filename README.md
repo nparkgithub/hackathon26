@@ -304,24 +304,54 @@ A finished demo film and slide deck are in [`demo/`](demo/).
 
 ### AllergenAR demo — full end-to-end
 
-**Step 1 — Start the local AI host (Snapdragon X Elite or any LAN PC)**
+**Step 1 — Start the local AI host (Snapdragon X Elite or any LAN PC, Windows)**
 
-Start LM Studio, load `Qwen/Qwen3-VL-4B-Instruct`, and enable the local server on port 1234.
+1. Install [LM Studio](https://lmstudio.ai) for Windows.
+2. In the model search tab, download `Qwen/Qwen3-VL-4B-Instruct` (`Q4_K_M` quant — matches `local_llm/mdns/llm_info.json`).
+3. Open the **Developer** tab → **Local Server**:
+   - Load the model, with context length `8192`.
+   - Leave the port at its default, `1234`.
+   - Enable **"Serve on Local Network"** — without this it binds to `127.0.0.1` only, and the phone (on the LAN, not loopback) can't reach it.
+4. Allow the port through Windows Firewall if prompted, or from an elevated prompt:
+   ```powershell
+   netsh advfirewall firewall add rule name="LM Studio" dir=in action=allow protocol=TCP localport=1234
+   ```
+5. From another machine on the same LAN, verify: `curl http://<PC-LAN-IP>:1234/v1/models`.
+6. Edit `local_llm/mdns/llm_info.json` if the loaded model differs from the checked-in label (`qwen/qwen3-vl-4b`, `Q4_K_M`, `8192`, `vision: true`) — the phone displays these fields verbatim.
+7. Start the Python reporter, pointing it at LM Studio's port:
+   ```powershell
+   cd local_llm\mdns
+   .venv\Scripts\python discover_and_report.py --openai-port 1234
+   ```
+8. Install the `devmon` APK on an Android device (or emulator) attached to the same Wi-Fi, start it, and tap **Start Advertising**. The phone will now discover this host — and LM Studio's LAN address and port via the reporter's telemetry — automatically.
 
-Install the `devmon` APK on an Android device (or emulator) attached to the same Wi-Fi, start it, and tap **Start Advertising**. The phone will now discover this host automatically.
+**Step 2 — (Optional) Start the cloud fallback on AWS EC2 (Ubuntu, Ollama + tquic-vlm-server-interface)**
 
-**Step 2 — (Optional) Start the cloud fallback on AWS EC2**
-
-```bash
-# On the Ubuntu x86_64 EC2 instance:
-./target/release/tquic-vlm-server-interface \
-  --bind 0.0.0.0:19500 \
-  --vlm-base-url http://127.0.0.1:11434/v1 \
-  --vlm-model qwen3-vl:8b
-# --help lists all flags: congestion control, body-size cap, timeouts, mpquic scheduler
-```
-
-Ollama must be running on the same EC2 instance with `ollama pull qwen3-vl:8b`.
+1. Launch an Ubuntu 26.04 EC2 instance. A GPU instance (e.g. `g6.xlarge`) is recommended for reasonable Qwen3-VL 8B latency; CPU-only works but answers more slowly.
+2. In the instance's security group, allow inbound UDP on the QUIC port (`19500` by default) from the phone's network — see [Networking Notes](#networking-notes). Ollama's port (`11434`) stays loopback-only and does **not** need a security-group rule.
+3. **GPU instances only** — install the NVIDIA driver so Ollama can see the GPU (skip on CPU-only instances):
+   ```bash
+   sudo apt update
+   sudo apt install -y ubuntu-drivers-common
+   sudo ubuntu-drivers autoinstall
+   sudo reboot
+   ```
+   After the instance comes back up, confirm the driver loaded: `nvidia-smi`. Without this step Ollama runs on CPU with no error or warning.
+4. Install Ollama and pull the model:
+   ```bash
+   curl -fsSL https://ollama.com/install.sh | sh
+   ollama pull qwen3-vl:8b
+   ```
+5. Verify Ollama's OpenAI-compatible API locally: `curl http://127.0.0.1:11434/v1/models`. On a GPU instance, `ollama ps` should show `100% GPU` for the loaded model.
+6. Build `tquic-vlm-server-interface` per [step 2 above](#2-tquic-vlm-server-interface--ubuntu-x8664-server) if you haven't already, then run it pointed at Ollama:
+   ```bash
+   ./target/release/tquic-vlm-server-interface \
+     --bind 0.0.0.0:19500 \
+     --vlm-base-url http://127.0.0.1:11434/v1 \
+     --vlm-model qwen3-vl:8b
+   # --help lists all flags: congestion control, body-size cap, timeouts, mpquic scheduler
+   ```
+7. Confirm that the EC2 security group allow inbound UDP on the bind port before testing from the phone.
 
 **Step 3 — Start the phone app and glasses app**
 
