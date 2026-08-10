@@ -27,11 +27,11 @@ A Samsung Galaxy S25 Ultra acts as the orchestration brain. It tries a nearby Sn
 
 | Name | Email |
 |---|---|
-| Daniel Park | npark@qti.qualcomm.com |
-| Chaitanya Mehta | chaimeht@qti.qualcomm.com |
-| Gautam Fotedar | gfotedar@qti.qualcomm.com |
-| Sukoon Sarin | sukosari@qti.qualcomm.com |
-| Eunice Koh | eunicek@qti.qualcomm.com |
+| Daniel Park | upnspark1@gmail.com |
+| Chaitanya Mehta |  |
+| Gautam Fotedar |  |
+| Sukoon Sarin |  |
+| Eunice Koh |  |
 
 ---
 ## Project Overview
