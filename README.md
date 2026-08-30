@@ -30,7 +30,7 @@ A Samsung Galaxy S25 Ultra acts as the orchestration brain. It tries a nearby Sn
 | Daniel Park | upnspark1@gmail.com |
 | Chaitanya Mehta |  |
 | Gautam Fotedar |  |
-| Sukoon Sarin |  |
+| Sukoon Sarin | sukoonsarin@gmail.com |
 | Eunice Koh |  |
 
 ---
